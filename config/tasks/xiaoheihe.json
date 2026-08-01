@@ -1,0 +1,79 @@
+{
+  "id": "xiaoheihe",
+  "name": "小黑盒",
+  "package": "com.max.xiaoheihe",
+  "actions": [
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "resource_id",
+      "resource_id": "com.max.xiaoheihe:id/epoxy_model_group_child_container"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 15,
+      "retries": 2,
+      "locate": "ui",
+      "target": "resource_id",
+      "resource_id": "com.max.xiaoheihe:id/iv_appbar_action_button"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "QQ",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "${qq_group_name}",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "发送",
+      "match_mode": "exact"
+    },
+    {
+      "type": "wait",
+      "seconds": 5
+    },
+    {
+      "type": "capture_screenshot"
+    },
+    {
+      "retries": 2,
+      "type": "click",
+      "timeout_seconds": 15,
+      "locate": "ui",
+      "target": "resource_id",
+      "resource_id": "com.tencent.mobileqq:id/dialogLeftBtn"
+    }
+  ]
+}

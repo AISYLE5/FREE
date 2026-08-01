@@ -1,0 +1,114 @@
+{
+  "name": "ocr_claim_or_watch",
+  "params": [],
+  "steps": [
+    {
+      "interval_seconds": 1,
+      "locate": "ocr",
+      "match_mode": "exact",
+      "result_var": "ocr_state",
+      "retries": 2,
+      "texts": [
+        "已领取",
+        "已领取√",
+        "领取",
+        "去观看"
+      ],
+      "timeout_seconds": 30,
+      "type": "detect"
+    },
+    {
+      "type": "if",
+      "var": "ocr_state",
+      "equals": "已领取"
+    },
+    {
+      "type": "if",
+      "var": "ocr_state",
+      "equals": "已领取√"
+    },
+    {
+      "type": "if",
+      "var": "ocr_state",
+      "equals": "领取"
+    },
+    {
+      "equals": "去观看",
+      "then": [
+        {
+          "interval_seconds": 1,
+          "locate": "ocr",
+          "match_mode": "exact",
+          "retries": 2,
+          "text": "去观看",
+          "timeout_seconds": 30,
+          "type": "click"
+        },
+        {
+          "seconds": 5,
+          "type": "wait"
+        },
+        {
+          "interval_seconds": 1,
+          "locate": "ocr",
+          "match_mode": "fuzzy",
+          "retries": 2,
+          "text": "%看至第%集%",
+          "timeout_seconds": 30,
+          "type": "click"
+        },
+        {
+          "seconds": 5,
+          "type": "wait"
+        },
+        {
+          "seconds": 60,
+          "type": "wait"
+        },
+        {
+          "type": "back"
+        },
+        {
+          "seconds": 2,
+          "type": "wait"
+        },
+        {
+          "type": "back"
+        },
+        {
+          "continue_on_timeout": true,
+          "interval_seconds": 1,
+          "locate": "ocr",
+          "match_mode": "exact",
+          "result_var": "claim_state",
+          "retries": 2,
+          "texts": [
+            "已领取",
+            "已领取√",
+            "领取"
+          ],
+          "timeout_seconds": 30,
+          "type": "detect"
+        },
+        {
+          "equals": "领取",
+          "then": [
+            {
+              "interval_seconds": 1,
+              "locate": "ocr",
+              "match_mode": "exact",
+              "retries": 2,
+              "text": "领取",
+              "timeout_seconds": 30,
+              "type": "click"
+            }
+          ],
+          "type": "if",
+          "var": "claim_state"
+        }
+      ],
+      "type": "if",
+      "var": "ocr_state"
+    }
+  ]
+}

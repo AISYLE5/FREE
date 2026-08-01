@@ -1,0 +1,42 @@
+{
+  "id": "hanserclub",
+  "name": "毛怪俱乐部",
+  "package": "com.hanser.club",
+  "actions": [
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "type": "click",
+      "locate": "ui",
+      "target": "text",
+      "text": "更多",
+      "match_mode": "exact",
+      "timeout_seconds": 20,
+      "retries": 2
+    },
+    {
+      "type": "click",
+      "locate": "ui",
+      "target": "text",
+      "text": "签到",
+      "skip_if_texts": [
+        "已签到"
+      ],
+      "match_mode": "exact",
+      "timeout_seconds": 30,
+      "retries": 2
+    },
+    {
+      "type": "wait",
+      "seconds": 5
+    },
+    {
+      "type": "capture_screenshot"
+    }
+  ]
+}

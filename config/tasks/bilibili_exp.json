@@ -1,0 +1,60 @@
+{
+  "id": "bilibili_exp",
+  "name": "哔哩哔哩 · 经验",
+  "package": "tv.danmaku.bili",
+  "actions": [
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 30,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "我的",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 30,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "大会员中心",
+      "match_mode": "exact"
+    },
+    {
+      "name": "bilibili_ad",
+      "type": "compound"
+    },
+    {
+      "name": "ocr_claim_or_watch",
+      "type": "compound"
+    },
+    {
+      "interval_seconds": 1,
+      "locate": "ocr",
+      "match_mode": "exact",
+      "retries": 2,
+      "skip_if_texts": [
+        "已领取",
+        "已领取√"
+      ],
+      "text": "领取",
+      "timeout_seconds": 15,
+      "type": "click"
+    },
+    {
+      "type": "wait",
+      "seconds": 5
+    },
+    {
+      "type": "capture_screenshot"
+    }
+  ]
+}

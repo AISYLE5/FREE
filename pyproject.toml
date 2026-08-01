@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "free"
+version = "0.1.0"
+description = "A local desktop tool for running MuMu Android check-in tasks."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6-Essentials>=6.8",
+    "onnxocr-ppocrv5>=0.0.18",
+    "onnxruntime>=1.20",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "coverage>=7",
+    "mypy>=1.8",
+]
+
+[project.scripts]
+free = "free_app.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["free_app"]
+
+[tool.pytest.ini_options]
+cache_dir = "cache/pytest"
+
+[tool.coverage.run]
+source = ["free_app"]
+branch = true
+data_file = "cache/coverage"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+cache_dir = "cache/mypy"
+
+# The PySide6 UI builders create widgets dynamically inside methods, invisible
+# to mypy; exempt these modules from attr-defined only.
+[[tool.mypy.overrides]]
+module = [
+    "free_app.action_editor_dialogs",
+    "free_app.settings_dialog",
+    "free_app.task_manager",
+]
+disable_error_code = ["attr-defined"]

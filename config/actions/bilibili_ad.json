@@ -1,0 +1,27 @@
+{
+  "name": "bilibili_ad",
+  "params": [],
+  "steps": [
+    {
+      "seconds": 10,
+      "type": "wait"
+    },
+    {
+      "type": "click",
+      "locate": "coordinate",
+      "x": 540,
+      "y": 960
+    },
+    {
+      "seconds": 5,
+      "type": "wait"
+    },
+    {
+      "type": "back"
+    },
+    {
+      "seconds": 5,
+      "type": "wait"
+    }
+  ]
+}

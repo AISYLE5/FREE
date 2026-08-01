@@ -1,0 +1,73 @@
+{
+  "id": "bilibili_share",
+  "name": "哔哩哔哩 · 分享",
+  "package": "tv.danmaku.bili",
+  "actions": [
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "retries": 2,
+      "type": "click",
+      "timeout_seconds": 15,
+      "locate": "ui",
+      "target": "text",
+      "text": "视频,%",
+      "match_mode": "fuzzy"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "resource_id",
+      "resource_id": "tv.danmaku.bili:id/frame_share"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "QQ",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "${qq_group_name}",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 20,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "发送",
+      "match_mode": "exact"
+    },
+    {
+      "type": "wait",
+      "seconds": 5
+    },
+    {
+      "type": "capture_screenshot"
+    },
+    {
+      "retries": 2,
+      "type": "click",
+      "timeout_seconds": 15,
+      "locate": "ui",
+      "target": "resource_id",
+      "resource_id": "com.tencent.mobileqq:id/dialogLeftBtn"
+    }
+  ]
+}

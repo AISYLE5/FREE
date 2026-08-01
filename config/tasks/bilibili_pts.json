@@ -1,0 +1,107 @@
+{
+  "id": "bilibili_pts",
+  "name": "哔哩哔哩 · 积分",
+  "package": "tv.danmaku.bili",
+  "actions": [
+    {
+      "type": "stop"
+    },
+    {
+      "type": "launch",
+      "wait_seconds": 10.0
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 30,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "我的",
+      "match_mode": "exact"
+    },
+    {
+      "type": "click",
+      "timeout_seconds": 30,
+      "retries": 2,
+      "locate": "ui",
+      "target": "text",
+      "text": "大会员中心",
+      "match_mode": "exact"
+    },
+    {
+      "name": "bilibili_ad",
+      "type": "compound"
+    },
+    {
+      "type": "detect",
+      "locate": "ocr",
+      "texts": [
+        "签到",
+        "已签到"
+      ],
+      "result_var": "state",
+      "match_mode": "exact",
+      "timeout_seconds": 8,
+      "interval_seconds": 1,
+      "continue_on_timeout": true,
+      "retries": 2
+    },
+    {
+      "equals": false,
+      "retries": 2,
+      "then": [
+        {
+          "equals": true,
+          "max_iterations": 6,
+          "steps": [
+            {
+              "duration_ms": 800,
+              "type": "swipe",
+              "x1": 540,
+              "x2": 540,
+              "y1": 1450,
+              "y2": 300
+            },
+            {
+              "continue_on_timeout": true,
+              "interval_seconds": 1,
+              "locate": "ocr",
+              "match_mode": "exact",
+              "result_var": "state",
+              "texts": [
+                "签到",
+                "已签到",
+                "去使用"
+              ],
+              "timeout_seconds": 8,
+              "type": "detect"
+            }
+          ],
+          "type": "loop_until",
+          "var": "state_found"
+        }
+      ],
+      "type": "if",
+      "var": "state_found"
+    },
+    {
+      "locate": "ocr",
+      "match_mode": "exact",
+      "retries": 2,
+      "skip_if_texts": [
+        "已签到",
+        "去使用"
+      ],
+      "text": "签到",
+      "timeout_seconds": 15,
+      "type": "click"
+    },
+    {
+      "type": "wait",
+      "seconds": 5
+    },
+    {
+      "type": "capture_screenshot"
+    }
+  ]
+}
