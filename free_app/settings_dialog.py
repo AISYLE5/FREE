@@ -388,7 +388,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("FREE · 设置")
         if not self.embedded:
             self.setMinimumSize(620, 620)
-            self.resize(720, 700)
+            self.resize(800, 700)
 
         root = QVBoxLayout(self)
         if self.embedded:
@@ -485,22 +485,43 @@ class SettingsDialog(QDialog):
         form.addRow(label, edit)
         return edit
 
-    def _make_switch_button(self, attr: str) -> QPushButton:
-        switch = QPushButton()
-        switch.setObjectName("settingsSwitch")
-        switch.setCheckable(True)
-        switch.setFixedSize(76, 34)
-        switch.toggled.connect(lambda checked: self._set_switch_text(switch, checked))
-        setattr(self, attr, switch)
-        return switch
+    def _make_bool_combo(self, attr: str) -> SettingsComboBox:
+        """创建一个“开/关”下拉选项控件，data 为布尔值。"""
+
+        combo = SettingsComboBox()
+        combo.addItem("开", True)
+        combo.addItem("关", False)
+        combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        setattr(self, attr, combo)
+        return combo
+
+    @staticmethod
+    def _set_bool_combo(combo: SettingsComboBox, value: bool) -> None:
+        combo.setCurrentIndex(max(0, combo.findData(value)))
 
     def _build_email_page(self) -> QWidget:
         container = QFrame()
         container.setObjectName("settingsTabPage")
         page = QVBoxLayout(container)
-        page.setContentsMargins(20, 12, 20, 12)
-        page.setSpacing(20)
-        page.addWidget(self._build_page_heading("邮件通知"))
+        page.setContentsMargins(20, 20, 20, 20)
+        page.setSpacing(18)
+
+        self.test_button = QPushButton("发送测试邮件")
+        self.test_button.setObjectName("settingsTestButton")
+        # Reserve slack beyond the text so the label never clips at scaled
+        # display resolutions (a naked exact-fit button looks distorted
+        # while pressed when its last glyphs are cut off).
+        self.test_button.setMinimumWidth(120)
+        self.test_button.clicked.connect(self._send_test_email)
+
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(self._build_page_heading("邮件通知"))
+        heading_row.addStretch(1)
+        heading_row.addWidget(self.test_button)
+        page.addLayout(heading_row)
 
         form = self._build_form_layout(20)
         self.smtp_host = QLineEdit()
@@ -532,19 +553,6 @@ class SettingsDialog(QDialog):
 
         self._add_int_field(form, "smtp_timeout_seconds", "发送超时", 1, 120)
         page.addWidget(self._build_option_card(None, form))
-
-        self.test_button = QPushButton("发送测试邮件")
-        self.test_button.setObjectName("settingsTestButton")
-        # Reserve slack beyond the text so the label never clips at scaled
-        # display resolutions (a naked exact-fit button looks distorted
-        # while pressed when its last glyphs are cut off).
-        self.test_button.setMinimumWidth(120)
-        self.test_button.clicked.connect(self._send_test_email)
-        test_row = QHBoxLayout()
-        test_row.setContentsMargins(2, 0, 2, 0)
-        test_row.addWidget(self.test_button)
-        test_row.addStretch(1)
-        page.addLayout(test_row)
         page.addStretch(1)
         return container
 
@@ -559,17 +567,17 @@ class SettingsDialog(QDialog):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 12, 20, 12)
-        content_layout.setSpacing(20)
+        content_layout.setContentsMargins(20, 20, 20, 20)
+        content_layout.setSpacing(18)
         content_layout.addWidget(self._build_page_heading("运行设置"))
 
         runtime_form = self._build_form_layout(24)
-        self.close_mumu_after_run = self._make_switch_button("close_mumu_after_run")
-        runtime_form.addRow("任务结束后关闭 MuMu 实例", self.close_mumu_after_run)
-        self.close_mumu_app_after_run = self._make_switch_button("close_mumu_app_after_run")
-        runtime_form.addRow("任务结束后退出 MuMu 程序", self.close_mumu_app_after_run)
-        self.email_enabled = self._make_switch_button("email_enabled")
-        runtime_form.addRow("任务结束后发送邮件通知", self.email_enabled)
+        self.close_mumu_after_run = self._make_bool_combo("close_mumu_after_run")
+        runtime_form.addRow("任务结束后关闭实例", self.close_mumu_after_run)
+        self.close_mumu_app_after_run = self._make_bool_combo("close_mumu_app_after_run")
+        runtime_form.addRow("任务结束后退出程序", self.close_mumu_app_after_run)
+        self.email_enabled = self._make_bool_combo("email_enabled")
+        runtime_form.addRow("任务结束后发送通知", self.email_enabled)
 
         self._add_int_field(
             runtime_form,
@@ -588,6 +596,30 @@ class SettingsDialog(QDialog):
             1000,
             "-1 无限制 ; 0 不保存",
         )
+
+        self.mumu_directory_edit = QLineEdit()
+        mumu_folder_row = QHBoxLayout()
+        mumu_folder_row.setSpacing(8)
+        mumu_folder_row.addWidget(self.mumu_directory_edit, 1)
+        self.mumu_browse_button = QPushButton("浏览")
+        self.mumu_browse_button.setObjectName("settingsBrowseButton")
+        self.mumu_browse_button.clicked.connect(self._browse_mumu_directory)
+        mumu_folder_row.addWidget(self.mumu_browse_button)
+        runtime_form.addRow("模拟器文件夹", mumu_folder_row)
+
+        self.qq_group_name_edit = QLineEdit()
+        runtime_form.addRow("转发对象名称", self.qq_group_name_edit)
+
+        instance_row = QHBoxLayout()
+        instance_row.setSpacing(8)
+        self.mumu_vm_index_combo = SettingsComboBox()
+        self.mumu_vm_index_combo.setMinimumWidth(180)
+        instance_row.addWidget(self.mumu_vm_index_combo, 1)
+        self.mumu_refresh_button = QPushButton("刷新实例")
+        self.mumu_refresh_button.setObjectName("settingsBrowseButton")
+        self.mumu_refresh_button.clicked.connect(self._refresh_mumu_instances)
+        instance_row.addWidget(self.mumu_refresh_button)
+        runtime_form.addRow("模拟器实例编号", instance_row)
 
         self.cleanup_mode_combo = SettingsComboBox()
         self.cleanup_mode_combo.addItem("删除至回收站", "recycle")
@@ -610,42 +642,17 @@ class SettingsDialog(QDialog):
         self.clear_screenshots_button.clicked.connect(
             lambda: self._clear_output_files("screenshots")
         )
+        cleanup_row.addStretch(1)
         cleanup_row.addWidget(self.clear_logs_button)
         cleanup_row.addWidget(self.clear_screenshots_button)
-        cleanup_row.addStretch(1)
         runtime_form.addRow("清理文件", cleanup_row)
         settings_card = self._build_option_card(None, runtime_form)
-
-        mumu_form = self._build_form_layout(24)
-        self.mumu_directory_edit = QLineEdit()
-        mumu_folder_row = QHBoxLayout()
-        mumu_folder_row.setSpacing(8)
-        mumu_folder_row.addWidget(self.mumu_directory_edit, 1)
-        self.mumu_browse_button = QPushButton("浏览")
-        self.mumu_browse_button.setObjectName("settingsBrowseButton")
-        self.mumu_browse_button.clicked.connect(self._browse_mumu_directory)
-        mumu_folder_row.addWidget(self.mumu_browse_button)
-        mumu_form.addRow("MuMu 模拟器文件夹", mumu_folder_row)
-
-        self.qq_group_name_edit = QLineEdit()
-        mumu_form.addRow("QQ 转发对象名称", self.qq_group_name_edit)
-
-        instance_row = QHBoxLayout()
-        instance_row.setSpacing(8)
-        self.mumu_vm_index_combo = SettingsComboBox()
-        self.mumu_vm_index_combo.setMinimumWidth(180)
-        instance_row.addWidget(self.mumu_vm_index_combo, 1)
-        self.mumu_refresh_button = QPushButton("刷新实例")
-        self.mumu_refresh_button.setObjectName("settingsBrowseButton")
-        self.mumu_refresh_button.clicked.connect(self._refresh_mumu_instances)
-        instance_row.addWidget(self.mumu_refresh_button)
-        mumu_form.addRow("MuMu 实例编号", instance_row)
-        card_layout = settings_card.layout()
-        if isinstance(card_layout, QVBoxLayout):
-            card_layout.addLayout(mumu_form)
         content_layout.addWidget(settings_card)
         content_layout.addStretch(1)
         scroll.setWidget(content)
+        scroll.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
+        scroll.viewport().setAutoFillBackground(False)
         page.addWidget(scroll)
         return container
 
@@ -662,13 +669,7 @@ class SettingsDialog(QDialog):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(20, 20, 20, 20)
         content_layout.setSpacing(18)
-        content_layout.addWidget(
-            self._build_page_heading(
-                "执行次数",
-                note="“执行全部”时按设定的次数执行；0 次表示不执行。"
-                "单独选择任务执行时，即使为 0 也会执行一次。",
-            )
-        )
+        content_layout.addWidget(self._build_page_heading("执行次数"))
 
         retry_card = QFrame()
         retry_card.setObjectName("settingsOptionCard")
@@ -700,6 +701,8 @@ class SettingsDialog(QDialog):
         content_layout.addWidget(retry_card)
         content_layout.addStretch(1)
         scroll.setWidget(content)
+        scroll.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
         page.addWidget(scroll)
         return container
 
@@ -717,33 +720,29 @@ class SettingsDialog(QDialog):
         ocr_layout.setContentsMargins(20, 20, 20, 20)
         ocr_layout.setSpacing(18)
         ocr_header = QHBoxLayout()
-        ocr_header.setSpacing(0)
+        ocr_header.setSpacing(4)
         ocr_header.addWidget(self._build_page_heading("OCR 模型"))
-        ocr_header.addSpacing(24)
+        ocr_header.addStretch(1)
         source_label = QLabel("下载源")
         source_label.setObjectName("settingsOcrFeedback")
         self.download_source_combo = SettingsComboBox()
         self.download_source_combo.addItem("自动", AUTO_SOURCE)
         for key in SOURCE_KEYS:
             self.download_source_combo.addItem(MODEL_SOURCES[key]["label"], key)
+        self.download_source_combo.setFixedWidth(130)
         ocr_header.addWidget(source_label)
         ocr_header.addWidget(self.download_source_combo)
-        ocr_header.addStretch(1)
-
-        ocr_action_row = QHBoxLayout()
-        ocr_action_row.setSpacing(8)
         self.ocr_feedback_label = QLabel("")
         self.ocr_feedback_label.setObjectName("settingsOcrFeedback")
-        ocr_action_row.addWidget(self.ocr_feedback_label)
+        ocr_header.addWidget(self.ocr_feedback_label)
         self.test_ocr_button = QPushButton("测试识别")
         self.test_ocr_button.setObjectName("settingsTestButton")
         self.test_ocr_button.clicked.connect(self._test_ocr)
         self.refresh_ocr_button = QPushButton("刷新")
         self.refresh_ocr_button.setObjectName("settingsTestButton")
         self.refresh_ocr_button.clicked.connect(self._refresh_model_status)
-        ocr_action_row.addWidget(self.test_ocr_button)
-        ocr_action_row.addWidget(self.refresh_ocr_button)
-        ocr_header.addLayout(ocr_action_row)
+        ocr_header.addWidget(self.test_ocr_button)
+        ocr_header.addWidget(self.refresh_ocr_button)
         ocr_layout.addLayout(ocr_header)
         self._model_sections_layout = QGridLayout()
         self._model_sections_layout.setContentsMargins(0, 0, 0, 0)
@@ -757,6 +756,8 @@ class SettingsDialog(QDialog):
         ocr_layout.addLayout(self._model_sections_layout)
         ocr_layout.addStretch(1)
         scroll.setWidget(content)
+        scroll.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
         page.addWidget(scroll)
         return container
 
@@ -1160,18 +1161,21 @@ class SettingsDialog(QDialog):
             configuration = self.settings.get("email_notification", {})
             if not isinstance(configuration, dict):
                 configuration = {}
-            self.email_enabled.setChecked(bool(configuration.get("enabled", _DEFAULT_EMAIL_ENABLED)))
-            self._set_switch_text(self.email_enabled, self.email_enabled.isChecked())
-            self.close_mumu_after_run.setChecked(
-                bool(self.settings.get("close_mumu_after_run", _DEFAULT_CLOSE_MUMU_AFTER_RUN))
+            self._set_bool_combo(
+                self.email_enabled,
+                bool(configuration.get("enabled", _DEFAULT_EMAIL_ENABLED)),
             )
-            self._set_switch_text(self.close_mumu_after_run, self.close_mumu_after_run.isChecked())
-            self.close_mumu_app_after_run.setChecked(
-                bool(self.settings.get("close_mumu_app_after_run", _DEFAULT_CLOSE_MUMU_APP_AFTER_RUN))
+            self._set_bool_combo(
+                self.close_mumu_after_run,
+                bool(self.settings.get("close_mumu_after_run", _DEFAULT_CLOSE_MUMU_AFTER_RUN)),
             )
-            self._set_switch_text(
+            self._set_bool_combo(
                 self.close_mumu_app_after_run,
-                self.close_mumu_app_after_run.isChecked(),
+                bool(
+                    self.settings.get(
+                        "close_mumu_app_after_run", _DEFAULT_CLOSE_MUMU_APP_AFTER_RUN
+                    )
+                ),
             )
             stored_execution_counts = self.settings.get("task_execution_counts", {})
             if not isinstance(stored_execution_counts, dict):
@@ -1229,7 +1233,7 @@ class SettingsDialog(QDialog):
         configuration = self.settings.get("email_notification", {})
         if not isinstance(configuration, dict):
             configuration = {}
-        if self.email_enabled.isChecked() != bool(configuration.get("enabled", _DEFAULT_EMAIL_ENABLED)):
+        if self.email_enabled.currentData() != bool(configuration.get("enabled", _DEFAULT_EMAIL_ENABLED)):
             return True
         if self.smtp_host.text().strip() != str(configuration.get("smtp_host", _DEFAULT_SMTP_HOST)):
             return True
@@ -1271,11 +1275,11 @@ class SettingsDialog(QDialog):
             configuration.get("smtp_timeout_seconds", _DEFAULT_SMTP_TIMEOUT_SECONDS)
         ):
             return True
-        if self.close_mumu_after_run.isChecked() != bool(
+        if self.close_mumu_after_run.currentData() != bool(
             self.settings.get("close_mumu_after_run", _DEFAULT_CLOSE_MUMU_AFTER_RUN)
         ):
             return True
-        if self.close_mumu_app_after_run.isChecked() != bool(
+        if self.close_mumu_app_after_run.currentData() != bool(
             self.settings.get("close_mumu_app_after_run", _DEFAULT_CLOSE_MUMU_APP_AFTER_RUN)
         ):
             return True
@@ -1383,10 +1387,6 @@ class SettingsDialog(QDialog):
                 return existing
         return mumu_cli_path(self.settings)
 
-    @staticmethod
-    def _set_switch_text(switch: QPushButton, enabled: bool) -> None:
-        switch.setText("开" if enabled else "关")
-
     def _collect_settings(self) -> dict[str, Any]:
         recipients = [
             value.strip()
@@ -1397,8 +1397,8 @@ class SettingsDialog(QDialog):
             task_id: combo.value() for task_id, combo in self._task_execution_combos.items()
         }
         return {
-            "close_mumu_after_run": self.close_mumu_after_run.isChecked(),
-            "close_mumu_app_after_run": self.close_mumu_app_after_run.isChecked(),
+            "close_mumu_after_run": self.close_mumu_after_run.currentData(),
+            "close_mumu_app_after_run": self.close_mumu_app_after_run.currentData(),
             "task_execution_counts": task_execution_counts,
             "max_log_files": self._clamped_int(
                 self.max_log_files_edit.text(), _DEFAULT_MAX_LOG_FILES, -1, 1000
@@ -1418,7 +1418,7 @@ class SettingsDialog(QDialog):
             "ocr_rec_model": self._selected_model("rec"),
             "ocr_download_source": self.download_source_combo.currentData(),
             "email_notification": {
-                "enabled": self.email_enabled.isChecked(),
+                "enabled": self.email_enabled.currentData(),
                 "smtp_host": self.smtp_host.text().strip(),
                 "smtp_port": self._clamped_int(self.smtp_port.text(), _DEFAULT_SMTP_PORT, 1, 65535),
                 "smtp_security": self.smtp_security.currentData(),
@@ -1615,6 +1615,42 @@ class SettingsDialog(QDialog):
             "            QScrollArea#settingsScroll {\n"
             "                background: transparent;\n"
             "                border: none;\n"
+            "            }\n"
+            "            QScrollBar:vertical {\n"
+            "                background: transparent;\n"
+            "                width: 10px;\n"
+            "            }\n"
+            "            QScrollBar::handle:vertical {\n"
+            "                background: #c9d8d3;\n"
+            "                border-radius: 5px;\n"
+            "                min-height: 24px;\n"
+            "            }\n"
+            "            QScrollBar::handle:vertical:hover {\n"
+            "                background: #a9c9c0;\n"
+            "            }\n"
+            "            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {\n"
+            "                height: 0px;\n"
+            "            }\n"
+            "            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {\n"
+            "                background: transparent;\n"
+            "            }\n"
+            "            QScrollBar:horizontal {\n"
+            "                background: transparent;\n"
+            "                height: 10px;\n"
+            "            }\n"
+            "            QScrollBar::handle:horizontal {\n"
+            "                background: #c9d8d3;\n"
+            "                border-radius: 5px;\n"
+            "                min-width: 24px;\n"
+            "            }\n"
+            "            QScrollBar::handle:horizontal:hover {\n"
+            "                background: #a9c9c0;\n"
+            "            }\n"
+            "            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {\n"
+            "                width: 0px;\n"
+            "            }\n"
+            "            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
+            "                background: transparent;\n"
             "            }\n"
             "            QLabel#settingsSectionTitle {\n"
             "                color: #193331;\n"

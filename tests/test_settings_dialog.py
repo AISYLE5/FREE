@@ -348,7 +348,7 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             try:
-                dialog.close_mumu_app_after_run.setChecked(True)
+                dialog.close_mumu_app_after_run.setCurrentIndex(0)
                 self.assertTrue(dialog._has_unsaved_changes())
             finally:
                 dialog.deleteLater()
