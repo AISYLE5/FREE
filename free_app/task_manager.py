@@ -566,7 +566,6 @@ class TaskManagerWidget(QWidget):
         self._creating_task = False
         self._creating_compound = False
         self._actions_buffer: list[dict[str, Any]] = []
-        self._params_buffer: list[str] = []
         self._steps_buffer: list[dict[str, Any]] = []
         self._compound_description_buffer = ""
         self._compound_description_present = False
@@ -1678,7 +1677,6 @@ class TaskManagerWidget(QWidget):
     def _save_compound_from_editor(self) -> bool:
         data = {
             "name": self.compound_name_edit.text().strip(),
-            "params": list(self._params_buffer),
             "steps": deep_copy(self._steps_buffer),
         }
         if self._compound_description_present or self._compound_description_buffer:
@@ -1688,7 +1686,6 @@ class TaskManagerWidget(QWidget):
     def _view_compound_json(self) -> None:
         data = {
             "name": self.compound_name_edit.text().strip(),
-            "params": list(self._params_buffer),
             "steps": deep_copy(self._steps_buffer),
         }
         self.embedded_json_viewer.load_data(data)
@@ -1701,12 +1698,6 @@ class TaskManagerWidget(QWidget):
         self.compound_name_edit.setText(str(data.get("name", "")))
         self._compound_description_buffer = str(data.get("description", ""))
         self._compound_description_present = "description" in data
-        raw_params = data.get("params")
-        self._params_buffer = (
-            [str(item).strip() for item in raw_params if isinstance(item, str) and item.strip()]
-            if isinstance(raw_params, list)
-            else []
-        )
         raw_steps = data.get("steps")
         self._steps_buffer = (
             deep_copy(raw_steps) if isinstance(raw_steps, list) else []
@@ -1720,7 +1711,6 @@ class TaskManagerWidget(QWidget):
         self._creating_compound = False
         self._suspend_dirty = True
         self._selected_compound = None
-        self._params_buffer = []
         self._steps_buffer = []
         self._compound_description_buffer = ""
         self._compound_description_present = False

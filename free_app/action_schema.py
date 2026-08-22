@@ -34,7 +34,7 @@ CLICK_UI_TARGETS = ("text", "resource_id")
 class ParamSpec:
     key: str
     label: str
-    kind: str = "text"  # text | number | bool | list | select | points
+    kind: str = "text"  # text | number | bool | list | select
     required: bool = False
     default: Any = None
     options: tuple[str, ...] = ()
@@ -79,10 +79,6 @@ def _list_of_text(value: Any) -> bool:
     )
 
 
-def _list_of_numbers(value: Any) -> bool:
-    return isinstance(value, list) and len(value) >= 2 and all(_number(item) for item in value)
-
-
 def _list_of_actions(value: Any) -> bool:
     return isinstance(value, list) and all(
         isinstance(item, dict)
@@ -99,10 +95,9 @@ _REQUIRED_VALIDATORS: dict[str, Callable[[Any, ParamSpec], bool]] = {
     "number": lambda item, spec: _number(item),
     "bool": lambda item, spec: _bool(item),
     "value": lambda item, spec: _text(item) or isinstance(item, bool),
-    "list": lambda item, spec: _list_of_text(item),
+    "list": lambda item, spec: _list_of_text(item) or _text(item),
     "actions": lambda item, spec: _list_of_actions(item),
     "select": lambda item, spec: _text(item) and str(item) in spec.options,
-    "points": lambda item, spec: _list_of_numbers(item),
 }
 
 _OPTIONAL_VALIDATORS: dict[str, Callable[[Any, ParamSpec], bool]] = {
@@ -110,10 +105,9 @@ _OPTIONAL_VALIDATORS: dict[str, Callable[[Any, ParamSpec], bool]] = {
     "number": lambda item, spec: _number(item),
     "bool": lambda item, spec: _bool(item),
     "value": lambda item, spec: isinstance(item, (str, bool)),
-    "list": lambda item, spec: isinstance(item, list),
+    "list": lambda item, spec: isinstance(item, (list, str)),
     "actions": lambda item, spec: isinstance(item, list),
     "select": lambda item, spec: isinstance(item, str) and item in spec.options,
-    "points": lambda item, spec: isinstance(item, list),
 }
 
 
@@ -137,8 +131,8 @@ def _validate_nested_steps(steps: Any, label: str, errors: list[str]) -> None:
 CLICK_SPECS: dict[str, tuple[ParamSpec, ...]] = {
     "ui_text": _with_retries(
         (
-            ParamSpec("text", "目标文本", "text", required=True, placeholder="例如：签到"),
-            ParamSpec("skip_if_texts", "跳过条件文本", "list", placeholder="已存在则不点击"),
+            ParamSpec("text", "目标文本", "list", required=True, placeholder="例如：签到,领取"),
+            ParamSpec("skip_if_texts", "跳过条件", "list", placeholder="例如：已签到,已领取"),
             ParamSpec("match_mode", "匹配方式", "select", default="exact", options=TEXT_MATCH_MODES),
             *_polling_specs(15, 0.5),
         )
@@ -151,8 +145,8 @@ CLICK_SPECS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     "ocr": _with_retries(
         (
-            ParamSpec("text", "需要 OCR 确认的文本", "text", required=True, placeholder="例如：签到"),
-            ParamSpec("skip_if_texts", "跳过条件文本", "list", placeholder="已存在则不点击"),
+            ParamSpec("text", "需要 OCR 确认的文本", "list", required=True, placeholder="例如：签到,领取"),
+            ParamSpec("skip_if_texts", "跳过条件", "list", placeholder="例如：已签到,已领取"),
             ParamSpec("match_mode", "匹配方式", "select", default="exact", options=TEXT_MATCH_MODES),
             *_polling_specs(15, 0.5),
         )
@@ -168,7 +162,7 @@ CLICK_SPECS: dict[str, tuple[ParamSpec, ...]] = {
 DETECT_SPECS: dict[str, tuple[ParamSpec, ...]] = {
     "ocr": _with_retries(
         (
-            ParamSpec("texts", "目标文本列表", "list", required=True, placeholder="多个值用逗号分隔"),
+            ParamSpec("texts", "目标文本", "list", required=True, placeholder="例如：签到,领取"),
             ParamSpec("result_var", "结果变量", "text", required=True, placeholder="例如：ocr_state"),
             ParamSpec("match_mode", "匹配方式", "select", default="exact", options=TEXT_MATCH_MODES),
             *_polling_specs(30, 1),
@@ -177,7 +171,7 @@ DETECT_SPECS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     "ui_text": _with_retries(
         (
-            ParamSpec("texts", "目标文本列表", "list", required=True, placeholder="多个值用逗号分隔"),
+            ParamSpec("texts", "目标文本", "list", required=True, placeholder="例如：签到,领取"),
             ParamSpec("result_var", "结果变量", "text", required=True, placeholder="例如：ui_state"),
             ParamSpec("match_mode", "匹配方式", "select", default="exact", options=TEXT_MATCH_MODES),
             *_polling_specs(30, 1),
@@ -219,7 +213,7 @@ LIFECYCLE_SPECS: dict[str, tuple[ParamSpec, ...]] = {
     "launch": _with_retries(
         (
             ParamSpec("package", "目标应用包名", "text", placeholder="留空使用任务包名"),
-            ParamSpec("wait_seconds", "启动后等待(秒)", "number", placeholder="默认 3"),
+            ParamSpec("wait_seconds", "启动后等待(秒)", "number", placeholder="3"),
             ParamSpec("launch_attempts", "启动尝试次数", "number", default=3),
         )
     ),
@@ -338,13 +332,10 @@ def validate_action_params(action_type: str, params: dict[str, Any]) -> list[str
         name = params.get("name")
         if not _text(name):
             errors.append("复合动作缺少 name")
-        invocation_params = params.get("params")
-        if invocation_params is not None and not isinstance(invocation_params, dict):
-            errors.append("复合动作的 params 必须是对象")
         retries = params.get("retries")
         if retries is not None and not _number(retries):
             errors.append("重试次数（retries）格式不正确")
-        unknown = [key for key in params if key not in {"name", "params", "retries", "description"}]
+        unknown = [key for key in params if key not in {"name", "retries", "description"}]
         if unknown:
             errors.append(f"compound 不支持参数: {', '.join(str(key) for key in sorted(unknown))}")
         return errors
@@ -392,6 +383,15 @@ def effective_parameters(action_type: str, params: dict[str, Any]) -> dict[str, 
     return effective
 
 
+def _join_text_values(value: Any) -> str:
+    """Render a text target (single string or list) for human-readable text."""
+
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value) or "-"
+    text = str(value).strip()
+    return text or "-"
+
+
 def describe_action(action_type: str, params: dict[str, Any]) -> str:
     """Short human-readable description used by logs and the editor."""
 
@@ -402,11 +402,11 @@ def describe_action(action_type: str, params: dict[str, Any]) -> str:
             target = str(effective.get("target", "text"))
             if target == "text":
                 suffix = "（模糊）" if effective.get("match_mode") == "fuzzy" else ""
-                return f"点击文本: {effective.get('text', '')}{suffix}"
+                return f"点击文本: {_join_text_values(effective.get('text', ''))}{suffix}"
             return f"点击控件: {effective.get('resource_id', '')}"
         if locate == "ocr":
             suffix = "（模糊）" if effective.get("match_mode") == "fuzzy" else ""
-            return f"OCR 点击文本: {effective.get('text', '')}{suffix}"
+            return f"OCR 点击文本: {_join_text_values(effective.get('text', ''))}{suffix}"
         return f"点击坐标: ({effective.get('x', '')}, {effective.get('y', '')})"
     if action_type == "swipe":
         return "滑动"
@@ -418,9 +418,9 @@ def describe_action(action_type: str, params: dict[str, Any]) -> str:
             if target == "resource_id":
                 return f"UI 检测控件: {effective.get('resource_id', '')} -> {result_var}"
             suffix = "（模糊）" if effective.get("match_mode") == "fuzzy" else ""
-            return f"UI 检测文本: {effective.get('texts', '')}{suffix} -> {result_var}"
+            return f"UI 检测文本: {_join_text_values(effective.get('texts', ''))}{suffix} -> {result_var}"
         suffix = "（模糊）" if effective.get("match_mode") == "fuzzy" else ""
-        return f"OCR 检测文本: {effective.get('texts', '')}{suffix} -> {result_var}"
+        return f"OCR 检测文本: {_join_text_values(effective.get('texts', ''))}{suffix} -> {result_var}"
     if action_type == "if":
         equals = effective.get("equals")
         if isinstance(equals, bool):

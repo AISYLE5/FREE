@@ -234,16 +234,9 @@ def load_action_library(directory: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(steps, list) or not steps:
             library[path.stem] = {"error": f"{path.name}: steps 必须是非空列表"}
             continue
-        params = data.get("params", [])
-        if not isinstance(params, list) or not all(
-            isinstance(item, str) and item.strip() for item in params
-        ):
-            library[path.stem] = {"error": f"{path.name}: params 必须是字符串列表"}
-            continue
         library[name.strip()] = {
             "path": path,
             "name": name.strip(),
-            "params": [str(item).strip() for item in params],
             "steps": steps,
         }
     return library
@@ -298,13 +291,7 @@ def _expand_action(
         return [], f"复合动作 {name} 已损坏: {definition['error']}"
     if name in stack:
         return [], f"复合动作循环引用: {' -> '.join((*stack, name))}"
-    invocation_params = action.parameters.get("params", {})
-    if not isinstance(invocation_params, dict):
-        return [], f"复合动作 {name} 的 params 必须是对象"
     merged = dict(variables)
-    for key, value in invocation_params.items():
-        if isinstance(key, str):
-            merged[key] = value
     outer_retries = action.parameters.get("retries")
     expanded: list[Action] = []
     for step in definition["steps"]:

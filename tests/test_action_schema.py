@@ -43,6 +43,22 @@ class ActionSchemaTests(unittest.TestCase):
         self.assertTrue(validate_action_params("if", {"var": "state"}))
         self.assertTrue(validate_action_params("unknown_action", {}))
 
+    def test_click_text_accepts_multi_targets_and_legacy_string(self) -> None:
+        self.assertEqual(
+            validate_action_params("click", {"locate": "ui", "text": ["签到", "领取"]}),
+            [],
+        )
+        self.assertEqual(
+            validate_action_params("click", {"locate": "ui", "text": "签到"}),
+            [],
+        )
+
+    def test_describe_click_joins_multiple_text_targets(self) -> None:
+        self.assertEqual(
+            describe_action("click", {"locate": "ui", "text": ["签到", "领取"]}),
+            "点击文本: 签到,领取",
+        )
+
     def test_validation_rejects_unsupported_action_parameters(self) -> None:
         self.assertTrue(
             validate_action_params(

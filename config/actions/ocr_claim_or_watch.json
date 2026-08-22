@@ -1,6 +1,5 @@
 {
   "name": "ocr_claim_or_watch",
-  "params": [],
   "steps": [
     {
       "interval_seconds": 1,

@@ -9,10 +9,8 @@ from threading import Event
 from typing import Any, Callable
 from xml.etree.ElementTree import ParseError
 
-from PySide6.QtGui import QImage
-
 from .adb import AdbClient, AdbError
-from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_SIZE, SCREEN_WIDTH
+from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
 from .action_schema import (
     COMPOUND_TYPE,
     PRIMITIVE_TYPES,
@@ -419,13 +417,16 @@ class AutomationEngine:
                     ):
                         self._log(f"点击前检测到跳过状态: {skip_values}")
                         return
-                    value = self._required_string(params, "text")
-                    point = self._ocr_box_center(boxes, value, match_mode)
-                    if point is not None:
-                        x, y = point
-                        self._log(f"OCR 点击文本: {value} ({x}, {y})")
-                        self.adb.tap(x, y)
-                        return
+                    values = self._string_values(params.get("text", []))
+                    if not values:
+                        raise ActionError("动作缺少参数: text")
+                    for value in values:
+                        point = self._ocr_box_center(boxes, value, match_mode)
+                        if point is not None:
+                            x, y = point
+                            self._log(f"OCR 点击文本: {value} ({x}, {y})")
+                            self.adb.tap(x, y)
+                            return
                 else:
                     snapshot = self._snapshot()
                     if skip_values and snapshot.find_any(
@@ -433,24 +434,34 @@ class AutomationEngine:
                     ):
                         self._log(f"点击前检测到跳过状态: {skip_values}")
                         return
+                    candidates: list[tuple[str, Any]] = []
                     if target == "resource_id":
-                        node = snapshot.find_resource_id(
-                            self._required_string(params, "resource_id")
+                        candidates.append(
+                            (
+                                str(params.get("resource_id", "")),
+                                snapshot.find_resource_id(
+                                    self._required_string(params, "resource_id")
+                                ),
+                            )
                         )
-                        label = str(params.get("resource_id", ""))
                     else:
-                        value = self._required_string(params, "text")
-                        node = snapshot.find_text(value, match_mode=match_mode)
-                        label = value
-                    if node is not None:
-                        if not node.enabled:
-                            raise ActionError(f"目标控件已禁用: {label}")
-                        if not node.bounds:
-                            raise ActionError(f"目标控件没有可点击区域: {label}")
-                        x, y = node.bounds.center
-                        self._log(f"点击: {label} ({x}, {y})")
-                        self.adb.tap(x, y)
-                        return
+                        values = self._string_values(params.get("text", []))
+                        if not values:
+                            raise ActionError("动作缺少参数: text")
+                        candidates.extend(
+                            (value, snapshot.find_text(value, match_mode=match_mode))
+                            for value in values
+                        )
+                    for label, node in candidates:
+                        if node is not None:
+                            if not node.enabled:
+                                raise ActionError(f"目标控件已禁用: {label}")
+                            if not node.bounds:
+                                raise ActionError(f"目标控件没有可点击区域: {label}")
+                            x, y = node.bounds.center
+                            self._log(f"点击: {label} ({x}, {y})")
+                            self.adb.tap(x, y)
+                            return
             except StopRequested:
                 raise
             except Exception as exc:

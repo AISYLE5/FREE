@@ -293,7 +293,7 @@ class TaskEditorTests(unittest.TestCase):
                     "type": "click",
                     "locate": "ui",
                     "target": "text",
-                    "text": "签到",
+                    "text": ["签到"],
                     "match_mode": "exact",
                     "timeout_seconds": 20,
                 },
@@ -331,13 +331,12 @@ class TaskEditorTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_action_editor_compound_selects_name_and_params(self) -> None:
+    def test_action_editor_compound_selects_name(self) -> None:
         application = QApplication.instance() or QApplication([])
         library = {
             "share_group": {
                 "name": "share_group",
                 "description": "分享到群",
-                "params": ["group_name"],
                 "steps": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
             }
         }
@@ -346,14 +345,13 @@ class TaskEditorTests(unittest.TestCase):
             index = dialog.type_combo.findData("compound")
             dialog.type_combo.setCurrentIndex(index)
             self.assertEqual(dialog._field_widgets["name"].currentData(), "share_group")
-            dialog._field_widgets["group_name"].setText("${qq_group_name}")
+            self.assertNotIn("group_name", dialog._field_widgets)
             data = dialog.collect()
             self.assertEqual(
                 data,
                 {
                     "type": "compound",
                     "name": "share_group",
-                    "params": {"group_name": "${qq_group_name}"},
                 },
             )
         finally:
@@ -362,12 +360,10 @@ class TaskEditorTests(unittest.TestCase):
     def test_compound_editor_collects_form(self) -> None:
         application = QApplication.instance() or QApplication([])
         dialog = CompoundEditorDialog(
-            None, "新建复合动作", {"name": "", "description": "", "params": [], "steps": []}
+            None, "新建复合动作", {"name": "", "description": "", "steps": []}
         )
         try:
             dialog.name_edit.setText("my_share")
-            dialog._params.append("group_name")
-            dialog._refresh_params()
             dialog._steps.append(
                 {"type": "click", "locate": "coordinate", "x": 1, "y": 2}
             )
@@ -377,7 +373,6 @@ class TaskEditorTests(unittest.TestCase):
                 data,
                 {
                     "name": "my_share",
-                    "params": ["group_name"],
                     "steps": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
                 },
             )
@@ -387,7 +382,7 @@ class TaskEditorTests(unittest.TestCase):
     def test_compound_editor_rejects_empty_steps(self) -> None:
         application = QApplication.instance() or QApplication([])
         dialog = CompoundEditorDialog(
-            None, "新建复合动作", {"name": "", "description": "", "params": [], "steps": []}
+            None, "新建复合动作", {"name": "", "description": "", "steps": []}
         )
         try:
             dialog.name_edit.setText("my_share")
@@ -1184,7 +1179,6 @@ class TaskEditorTests(unittest.TestCase):
             dialog = self._make_widget(base)
             try:
                 self.assertEqual(dialog.compound_name_edit.text(), "share")
-                self.assertEqual(dialog._params_buffer, ["group_name"])
                 self.assertEqual(len(dialog._steps_buffer), 2)
                 self.assertEqual(dialog.compound_steps_list.count(), 2)
             finally:

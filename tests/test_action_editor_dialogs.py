@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QListWidget
+from PySide6.QtWidgets import QApplication, QLineEdit, QListWidget
 
 from free_app.action_editor_dialogs import (
     ActionEditorDialog,
@@ -123,6 +123,29 @@ class ActionEditorDialogTests(unittest.TestCase):
             self.assertEqual(data["locate"], "ocr")
             self.assertEqual(data["texts"], ["已领取", "领取"])
             self.assertEqual(data["result_var"], "ocr_state")
+        finally:
+            dialog.deleteLater()
+
+    def test_click_editor_uses_multi_target_labels_and_placeholders(self) -> None:
+        dialog = ActionEditorDialog(
+            None,
+            "添加动作",
+            {"type": "click", "locate": "ui"},
+            {},
+        )
+        try:
+            text_widget = dialog._field_widgets["text"]
+            skip_widget = dialog._field_widgets["skip_if_texts"]
+            self.assertIsInstance(text_widget, QLineEdit)
+            self.assertIsInstance(skip_widget, QLineEdit)
+            self.assertEqual(text_widget.placeholderText(), "例如：签到,领取")
+            self.assertEqual(skip_widget.placeholderText(), "例如：已签到,已领取")
+            text_widget.setText("签到，领取")
+            skip_widget.setText("已签到, 已领取")
+            data = dialog.collect()
+            self.assertIsNotNone(data)
+            self.assertEqual(data["text"], ["签到", "领取"])
+            self.assertEqual(data["skip_if_texts"], ["已签到", "已领取"])
         finally:
             dialog.deleteLater()
 

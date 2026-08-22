@@ -1,6 +1,5 @@
 {
   "name": "bilibili_ad",
-  "params": [],
   "steps": [
     {
       "seconds": 10,

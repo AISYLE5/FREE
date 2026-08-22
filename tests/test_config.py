@@ -937,16 +937,9 @@ class ConfigTests(unittest.TestCase):
                 json.dumps({"name": "empty", "steps": []}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            (actions_directory / "bad_params.json").write_text(
-                json.dumps(
-                    {"name": "bad_params", "params": [1], "steps": [{"type": "wait", "seconds": 1}]},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
             (actions_directory / "valid.json").write_text(
                 json.dumps(
-                    {"name": "valid", "params": [], "steps": [{"type": "wait", "seconds": 1}]},
+                    {"name": "valid", "steps": [{"type": "wait", "seconds": 1}]},
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
@@ -955,7 +948,7 @@ class ConfigTests(unittest.TestCase):
             library = load_action_library(actions_directory)
 
         self.assertIn("valid", library)
-        for broken_name in ("bad_json", "not_object", "no_name", "empty_steps", "bad_params"):
+        for broken_name in ("bad_json", "not_object", "no_name", "empty_steps"):
             self.assertIn("error", library[broken_name])
 
     def test_coerce_scalars_restores_primitive_types(self) -> None:
@@ -998,23 +991,15 @@ class ConfigTests(unittest.TestCase):
         library = {
             "cycle": {
                 "name": "cycle",
-                "params": [],
                 "steps": [{"type": "compound", "name": "cycle"}],
             },
             "bad_step": {
                 "name": "bad_step",
-                "params": [],
                 "steps": [123],
             },
             "bad_action": {
                 "name": "bad_action",
-                "params": [],
                 "steps": [{"type": "wait", "seconds": "bad"}],
-            },
-            "bad_params": {
-                "name": "bad_params",
-                "params": [],
-                "steps": [{"type": "wait", "seconds": 1}],
             },
         }
         cycle = Action("compound", {"name": "cycle"})
@@ -1027,10 +1012,6 @@ class ConfigTests(unittest.TestCase):
 
         bad_action = Action("compound", {"name": "bad_action"})
         _actions, error = _expand_action(bad_action, library, {}, ())
-        self.assertTrue(error)
-
-        bad_params = Action("compound", {"name": "bad_params", "params": "not-dict"})
-        _actions, error = _expand_action(bad_params, library, {}, ())
         self.assertTrue(error)
 
     def test_expand_action_applies_outer_retries_to_steps(self) -> None:

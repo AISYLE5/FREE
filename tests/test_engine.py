@@ -619,6 +619,66 @@ class EngineTests(unittest.TestCase):
 
         self.assertEqual(adb.taps, [(100, 50)])
 
+    def test_click_ui_text_matches_first_of_multiple_targets(self) -> None:
+        class MultiTargetClickAdb(FakeAdb):
+            def dump_ui(self) -> str:
+                return (
+                    '<hierarchy>'
+                    '<node text="签到" clickable="true" enabled="true" '
+                    'visible-to-user="true" bounds="[0,0][100,80]" />'
+                    '<node text="领取" clickable="true" enabled="true" '
+                    'visible-to-user="true" bounds="[100,0][200,80]" />'
+                    '</hierarchy>'
+                )
+
+        adb = MultiTargetClickAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            poll_interval=0,
+            sleep_function=lambda _seconds: None,
+        )
+
+        engine._execute(
+            Action(
+                "click",
+                {
+                    "locate": "ui",
+                    "target": "text",
+                    "text": ["签到", "领取"],
+                    "timeout_seconds": 0.1,
+                },
+            )
+        )
+
+        self.assertEqual(adb.taps, [(50, 40)])
+
+    def test_click_ocr_text_matches_any_of_multiple_targets(self) -> None:
+        adb = FakeAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            poll_interval=0,
+            sleep_function=lambda _seconds: None,
+            ocr_boxes_client=lambda _image: [
+                ("看至第1集", [(100, 200), (300, 200), (300, 300), (100, 300)])
+            ],
+        )
+
+        engine._execute(
+            Action(
+                "click",
+                {
+                    "locate": "ocr",
+                    "text": ["看至第_集", "再看"],
+                    "match_mode": "fuzzy",
+                    "timeout_seconds": 0.1,
+                },
+            )
+        )
+
+        self.assertEqual(adb.taps, [(200, 250)])
+
     def test_click_ocr_text_does_not_need_result_var(self) -> None:
         adb = FakeAdb()
         engine = AutomationEngine(

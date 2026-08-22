@@ -14,12 +14,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -244,11 +242,6 @@ class _ActionFormMixin:
                 if name_index >= 0:
                     name_combo.setCurrentIndex(name_index)
             self._rebuild_form()
-            params = self._initial.get("params")
-            if isinstance(params, dict):
-                for key, widget in list(self._field_widgets.items()):
-                    if key != "name" and key in params and isinstance(widget, QLineEdit):
-                        widget.setText(str(params[key]))
             return
         for key in ("locate", "mode", "target"):
             if key not in self._initial:
@@ -360,28 +353,12 @@ class _ActionFormMixin:
     ) -> None:
         combo = SettingsComboBox()
         for name in sorted(self._compound_library):
-            definition = self._compound_library[name]
             combo.addItem(name, name)
         if selected_name:
             index = combo.findData(selected_name)
             combo.setCurrentIndex(index if index >= 0 else -1)
-        combo.currentIndexChanged.connect(self._rebuild_form)
         self._field_widgets["name"] = combo
         form.addRow("复合动作*", combo)
-        definition = self._compound_library.get(str(combo.currentData() or "")) or {}
-        raw_params = definition.get("params")
-        param_names: list[str] = []
-        if isinstance(raw_params, list):
-            param_names = [
-                str(item).strip()
-                for item in raw_params
-                if isinstance(item, str) and item.strip()
-            ]
-        for param_name in param_names:
-            edit = QLineEdit()
-            edit.setPlaceholderText("留空则不传")
-            self._field_widgets[param_name] = edit
-            form.addRow(param_name, edit)
 
     def _create_field_widget(self, spec: ParamSpec) -> QWidget:
         widget: QWidget
@@ -390,6 +367,9 @@ class _ActionFormMixin:
             widget.setValidator(QDoubleValidator(-1_000_000_000, 1_000_000_000, 3, widget))
             if spec.default is not None:
                 widget.setPlaceholderText(str(spec.default))
+            elif spec.placeholder:
+                # 无 default 的数字字段（如启动后等待）直接把占位值写成数值。
+                widget.setPlaceholderText(spec.placeholder)
         elif spec.kind == "bool":
             widget = QCheckBox()
             widget.setText("是")
@@ -407,11 +387,7 @@ class _ActionFormMixin:
             widget = _ActionStepsField(label=spec.label, key=spec.key)
         elif spec.kind == "list":
             widget = QLineEdit()
-            widget.setPlaceholderText(spec.placeholder or "多个值用逗号分隔")
-        elif spec.kind == "points":
-            widget = QPlainTextEdit()
-            widget.setPlaceholderText("每行一个坐标，如：540, 960")
-            widget.setFixedHeight(72)
+            widget.setPlaceholderText(spec.placeholder or "例如：A,B")
         else:
             widget = QLineEdit()
             widget.setPlaceholderText(spec.placeholder)
@@ -428,12 +404,6 @@ class _ActionFormMixin:
             return
         if isinstance(widget, QCheckBox):
             widget.setChecked(bool(value))
-            return
-        if isinstance(widget, QPlainTextEdit):
-            if isinstance(value, list):
-                widget.setPlainText("\n".join(f"{x}, {y}" for x, y in value))
-            elif value is not None:
-                widget.setPlainText(str(value))
             return
         if isinstance(widget, QLineEdit):
             if isinstance(value, list):
@@ -476,7 +446,11 @@ class _ActionFormMixin:
         if kind == "bool":
             return (True if widget.isChecked() else None), None
         if kind == "list":
-            items = [item.strip() for item in widget.text().split(",") if item.strip()]
+            items = [
+                item.strip()
+                for item in widget.text().replace("，", ",").split(",")
+                if item.strip()
+            ]
             if not items:
                 if spec.required:
                     return None, f"{spec.label}不能为空"
@@ -484,26 +458,6 @@ class _ActionFormMixin:
             return items, None
         if kind == "select":
             return widget.currentData(), None
-        if kind == "points":
-            points: list[list[Any]] = []
-            for line in widget.toPlainText().splitlines():
-                parts = [part.strip() for part in line.split(",")]
-                if not parts or not parts[0]:
-                    continue
-                if len(parts) < 2 or not parts[1]:
-                    return None, f"{spec.label}每行需要两个数字（x, y）"
-                try:
-                    x, y = float(parts[0]), float(parts[1])
-                except ValueError:
-                    return None, f"{spec.label}每行需要两个数字（x, y）"
-                points.append(
-                    [int(x) if x.is_integer() else x, int(y) if y.is_integer() else y]
-                )
-            if not points:
-                if spec.required:
-                    return None, f"{spec.label}不能为空"
-                return None, None
-            return points, None
         return None, None
 
     def _apply_locate_target(self, data: dict[str, Any]) -> None:
@@ -523,22 +477,12 @@ class _ActionFormMixin:
             if not name:
                 QMessageBox.warning(self, "无法保存", "请选择复合动作。")
                 return None
-            params: dict[str, Any] = {}
-            for key, widget in self._field_widgets.items():
-                if key == "name":
-                    continue
-                if isinstance(widget, QLineEdit):
-                    text = widget.text().strip()
-                    if text:
-                        params[key] = text
             data: dict[str, Any] = {
                 key: copy.deepcopy(value)
                 for key, value in self._initial.items()
                 if key in {"description"}
             }
             data.update({"type": COMPOUND_TYPE, "name": str(name)})
-            if params:
-                data["params"] = params
             return data
         managed_keys = {"type", "description"}
         managed_keys.update(self._active_specs)
@@ -572,22 +516,12 @@ class _ActionFormMixin:
         if action_type == COMPOUND_TYPE:
             name_combo = self._field_widgets.get("name")
             name = name_combo.currentData() if isinstance(name_combo, QComboBox) else ""
-            params: dict[str, Any] = {}
-            for key, widget in self._field_widgets.items():
-                if key == "name":
-                    continue
-                if isinstance(widget, QLineEdit):
-                    text = widget.text().strip()
-                    if text:
-                        params[key] = text
             data: dict[str, Any] = {
                 key: copy.deepcopy(value)
                 for key, value in self._initial.items()
                 if key in {"description"}
             }
             data.update({"type": COMPOUND_TYPE, "name": str(name)})
-            if params:
-                data["params"] = params
             return data
         managed_keys = {"type", "description"}
         managed_keys.update(self._active_specs)
@@ -612,9 +546,6 @@ class _ActionFormMixin:
         value, error = self._widget_value(widget, spec)
         if value is not None or error is None:
             return value
-        if isinstance(widget, QPlainTextEdit):
-            text = widget.toPlainText()
-            return text if text.strip() else None
         if isinstance(widget, QLineEdit):
             text = widget.text()
             return text if text.strip() else None
@@ -768,8 +699,6 @@ class ActionEditorWidget(QWidget, _ActionFormMixin):
                 widget.currentIndexChanged.connect(self._on_form_changed)
             elif isinstance(widget, QCheckBox):
                 widget.stateChanged.connect(self._on_form_changed)
-            elif isinstance(widget, QPlainTextEdit):
-                widget.textChanged.connect(self._on_form_changed)
             elif isinstance(widget, _ActionStepsField):
                 widget.changed.connect(self._on_form_changed)
             else:
@@ -1001,7 +930,6 @@ class CompoundEditorDialog(QDialog, _ActionListMixin):
         self.setStyleSheet(self._style_sheet())
         self.action_data: dict[str, Any] | None = None
         self._initial = dict(initial)
-        self._params: list[str] = []
         self._steps: list[dict[str, Any]] = []
         self._build_ui()
         self._load_initial()
@@ -1019,25 +947,6 @@ class CompoundEditorDialog(QDialog, _ActionListMixin):
         self.name_edit.setPlaceholderText("字母/数字/下划线/短横线，如 my_share")
         form.addRow("名称*", self.name_edit)
         layout.addLayout(form)
-
-        params_header = QHBoxLayout()
-        params_header.setSpacing(6)
-        params_title = QLabel("参数")
-        params_title.setObjectName("dialogSectionTitle")
-        add_param_button = QPushButton("添加参数")
-        remove_param_button = QPushButton("删除参数")
-        remove_param_button.setObjectName("dangerButton")
-        add_param_button.clicked.connect(self._add_param)
-        remove_param_button.clicked.connect(self._remove_param)
-        params_header.addWidget(params_title)
-        params_header.addStretch(1)
-        params_header.addWidget(add_param_button)
-        params_header.addWidget(remove_param_button)
-        layout.addLayout(params_header)
-        self.params_list = QListWidget()
-        self.params_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.params_list.setMaximumHeight(110)
-        layout.addWidget(self.params_list)
 
         steps_header = QHBoxLayout()
         steps_header.setSpacing(6)
@@ -1102,46 +1011,10 @@ class CompoundEditorDialog(QDialog, _ActionListMixin):
 
     def _load_initial(self) -> None:
         self.name_edit.setText(str(self._initial.get("name", "")))
-        raw_params = self._initial.get("params")
-        if isinstance(raw_params, list):
-            self._params = [
-                str(item).strip()
-                for item in raw_params
-                if isinstance(item, str) and item.strip()
-            ]
         raw_steps = self._initial.get("steps")
         if isinstance(raw_steps, list):
             self._steps = deep_copy(raw_steps)
-        self._refresh_params()
         self._refresh_steps()
-
-    def _refresh_params(self) -> None:
-        self.params_list.clear()
-        for name in self._params:
-            self.params_list.addItem(QListWidgetItem(name))
-
-    def _add_param(self) -> None:
-        name, accepted = QInputDialog.getText(self, "添加参数", "参数名（字母、数字、下划线）")
-        name = name.strip()
-        if not accepted or not name:
-            return
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            QMessageBox.warning(
-                self, "无法添加", "参数名只能包含字母、数字、下划线，且以字母或下划线开头。"
-            )
-            return
-        if name in self._params:
-            QMessageBox.warning(self, "无法添加", f"参数 {name} 已存在。")
-            return
-        self._params.append(name)
-        self._refresh_params()
-
-    def _remove_param(self) -> None:
-        row = self.params_list.currentRow()
-        if row < 0:
-            return
-        del self._params[row]
-        self._refresh_params()
 
     def collect(self) -> dict[str, Any] | None:
         name = self.name_edit.text().strip()
@@ -1155,6 +1028,5 @@ class CompoundEditorDialog(QDialog, _ActionListMixin):
             return None
         return {
             "name": name,
-            "params": list(self._params),
             "steps": deep_copy(self._steps),
         }
