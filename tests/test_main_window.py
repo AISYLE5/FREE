@@ -46,7 +46,6 @@ class LogTarget:
     def __init__(self) -> None:
         self.log_view = FakeLogView()
         self.log_file = io.StringIO()
-        self.log_output_level = "all"
 
 
 class MainWindowTests(unittest.TestCase):
@@ -761,21 +760,25 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertRegex(target.log_view.lines[0], r"^\[\d{2}:\d{2}:\d{2}\] plain message$")
 
-    def test_append_log_filters_noise_when_summary_output_level(self) -> None:
+    def test_append_log_writes_every_line(self) -> None:
         target = LogTarget()
-        target.log_output_level = "summary"
 
         MainWindow._append_log(target, "[12:34:56] OCR 点击候选: ['领取']")
-        self.assertEqual(target.log_view.lines, [])
-        self.assertEqual(target.log_file.getvalue(), "")
-
+        MainWindow._append_log(target, "[12:34:56] ADB tap: (540, 960)")
         MainWindow._append_log(target, "[12:34:56] 任务结果 [1/1] demo: success")
+
         self.assertEqual(
             target.log_view.lines,
-            ["[12:34:56] 任务结果 [1/1] demo: success"],
+            [
+                "[12:34:56] OCR 点击候选: ['领取']",
+                "[12:34:56] ADB tap: (540, 960)",
+                "[12:34:56] 任务结果 [1/1] demo: success",
+            ],
         )
         self.assertEqual(
             target.log_file.getvalue(),
+            "[12:34:56] OCR 点击候选: ['领取']\n"
+            "[12:34:56] ADB tap: (540, 960)\n"
             "[12:34:56] 任务结果 [1/1] demo: success\n",
         )
 
@@ -801,24 +804,20 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._update_subtitle(target)
         self.assertEqual(target.subtitle_label.text, "实例 0  ·  1080×1920  ·  480 dpi")
 
-    def test_effective_screenshot_level_follows_max_files_and_save_level(self) -> None:
+    def test_effective_screenshot_mode_follows_max_files(self) -> None:
         class Target:
             settings: dict = {}
 
         Target.settings = {"screenshot_max_files": 0}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "none")
+        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "none")
         Target.settings = {"screenshot_max_files": -1}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
+        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
         Target.settings = {"screenshot_max_files": 5}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
-        Target.settings = {"screenshot_max_files": -1, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "all")
-        Target.settings = {"screenshot_max_files": 5, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "all")
-        Target.settings = {"screenshot_max_files": 0, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "none")
-        Target.settings = {"screenshot_max_files": -1, "screenshot_save_level": "invalid"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
+        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
+        Target.settings = {"screenshot_save_level": "all"}
+        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
+        Target.settings = {"screenshot_save_level": "invalid"}
+        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,6 @@ from .action_schema import ACTIONS_DIRECTORY_NAME, COMPOUND_TYPE, validate_actio
 from .constants import MAX_OUTPUT_FILE_LIMIT, MAX_TASK_EXECUTION_COUNT
 from .models import Action, TaskDefinition
 
-LOG_OUTPUT_LEVELS = {"summary", "all"}
-SCREENSHOT_SAVE_LEVELS = {"key", "all"}
 SMTP_SECURITY_LEVELS = {"ssl", "starttls"}
 OCR_DOWNLOAD_SOURCES = ("auto", "baidu", "modelscope", "huggingface")
 DEFAULT_SMTP_HOST = "smtp.qq.com"
@@ -36,8 +34,6 @@ NATIVE_SETTING_KEYS = {
     "mumu_directory",
     "command_timeout_seconds",
     "poll_interval_seconds",
-    "screenshot_save_level",
-    "log_output_level",
     "log_directory",
     "screenshot_directory",
     "ocr_model_directory",
@@ -413,16 +409,7 @@ def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     for key, flag_default in bool_defaults.items():
         sanitized[key] = _native_bool(sanitized.get(key), flag_default)
 
-    # 截图保存级别：key = 成功和出错时，all = 每次动作前后。
-    # 是否保存由 screenshot_max_files 控制：0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个。
-    screenshot_level = sanitized.get("screenshot_save_level")
-    sanitized["screenshot_save_level"] = (
-        screenshot_level if screenshot_level in SCREENSHOT_SAVE_LEVELS else "key"
-    )
-
-    output_level = sanitized.get("log_output_level")
-    sanitized["log_output_level"] = output_level if output_level in LOG_OUTPUT_LEVELS else "all"
-
+    # 是否保存截图由 screenshot_max_files 控制：0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个。
     mumu_directory = sanitized.get("mumu_directory")
     if not isinstance(mumu_directory, str) or not mumu_directory.strip():
         sanitized["mumu_directory"] = _derive_mumu_directory(sanitized)

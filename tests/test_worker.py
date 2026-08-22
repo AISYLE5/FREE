@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -8,7 +9,7 @@ from free_app.adb import AdbError
 from free_app.config import TaskFileError, load_task_directory
 from free_app.models import Action, RunResult, RunStatus, TaskDefinition
 from free_app.mumu import MuMuStopRequested
-from free_app.worker import BatchTaskWorker, TaskWorker, reconnect_device
+from free_app.worker import BatchTaskWorker, TaskWorker, _prune_outputs, reconnect_device
 
 
 class FakeAdb:
@@ -42,6 +43,30 @@ def make_task(task_id: str = "demo") -> TaskDefinition:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_prune_outputs_limits_screenshots_by_max_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            logs = base / "logs"
+            screenshots = base / "screenshots"
+            logs.mkdir()
+            screenshots.mkdir()
+            (logs / "run.log").write_text("x", encoding="utf-8")
+            for index in range(3):
+                (screenshots / f"{index}.png").write_text("x", encoding="utf-8")
+            settings = {
+                "log_directory": "logs",
+                "screenshot_directory": "screenshots",
+                "log_max_files": -1,
+                "screenshot_max_files": 1,
+                "cleanup_mode": "permanent",
+            }
+
+            _prune_outputs(settings, base, lambda _message: None)
+
+            remaining = sorted(path.name for path in screenshots.glob("*.png"))
+            self.assertEqual(remaining, ["2.png"])
+            self.assertEqual(len(list(logs.glob("*.log"))), 1)
+
     def test_reconnect_device_uses_adb_reconnect_and_logs_success(self) -> None:
         adb = FakeAdb()
         adb.reconnect = MagicMock(return_value=True)  # type: ignore[attr-defined]

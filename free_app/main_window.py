@@ -41,7 +41,7 @@ from .config import (
     save_settings,
 )
 from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
-from .logging_utils import format_log_line, should_write_log_line
+from .logging_utils import format_log_line
 from .message_box import QMessageBox
 from .models import BatchRunResult, RunResult, RunStatus, TaskDefinition
 from .mumu import MuMuError, mumu_adb_address_from_settings
@@ -136,7 +136,6 @@ class MainWindow(QMainWindow):
         self.task_results: dict[str, RunResult] = {}
         self.task_executions_done = 0
         self.log_file: TextIO | None = None
-        self.log_output_level = "all"
         self._refresh_active = False
         self._refresh_started = 0.0
         self._task_manager_copy_feedback_timer = QTimer(self)
@@ -446,15 +445,13 @@ class MainWindow(QMainWindow):
             f"实例 {vmindex}  ·  {SCREEN_WIDTH}×{SCREEN_HEIGHT}  ·  {SCREEN_DENSITY} dpi"
         )
 
-    def _effective_screenshot_level(self) -> str:
+    def _effective_screenshot_mode(self) -> str:
         try:
             max_files = int(self.settings.get("screenshot_max_files", -1))
         except (TypeError, ValueError):
             max_files = -1
-        if max_files == 0:
-            return "none"
-        level = str(self.settings.get("screenshot_save_level", "key"))
-        return level if level in {"key", "all"} else "key"
+        # 截图只按"成功与失败（key）"级别保存；screenshot_max_files=0 时完全不保存。
+        return "none" if max_files == 0 else "key"
 
     def _set_execution_controls(self, state: str) -> None:
         if state in ("running", "stopping"):
@@ -938,14 +935,12 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _append_log(self, message: str) -> None:
         line = format_log_line(message)
-        output_level = self.log_output_level
-        if should_write_log_line(output_level, line):
-            self.log_view.appendPlainText(line)
-            scroll_bar = self.log_view.verticalScrollBar()
-            scroll_bar.setValue(scroll_bar.maximum())
-            if self.log_file:
-                self.log_file.write(line + "\n")
-                self.log_file.flush()
+        self.log_view.appendPlainText(line)
+        scroll_bar = self.log_view.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+        if self.log_file:
+            self.log_file.write(line + "\n")
+            self.log_file.flush()
 
     def _prepare_run(
         self,
@@ -966,7 +961,6 @@ class MainWindow(QMainWindow):
 
         debug_mode = self.run_mode == "debug"
         append_log = log_receiver or self._append_log
-        self.log_output_level = str(self.settings.get("log_output_level", "all"))
         log_directory = resolve_path(self.settings.get("log_directory"), self.base_directory)
         screenshot_directory = resolve_path(
             self.settings.get("screenshot_directory"), self.base_directory
@@ -1005,9 +999,7 @@ class MainWindow(QMainWindow):
         else:
             append_log(
                 "运行配置: "
-                f"log_output_level={self.log_output_level}, "
                 f"poll_interval={poll_interval:g}s, "
-                f"screenshot_save_level={self._effective_screenshot_level()}, "
                 f"auto_start_mumu={bool(self.settings.get('auto_start_mumu', False))}, "
                 f"close_mumu_after_run={bool(self.settings.get('close_mumu_after_run', False))}, "
                 f"close_mumu_app_after_run="
@@ -1023,7 +1015,7 @@ class MainWindow(QMainWindow):
                 adb=adb,
                 screenshot_directory=screenshot_directory,
                 poll_interval=poll_interval,
-                screenshot_save_level=self._effective_screenshot_level(),
+                screenshot_mode=self._effective_screenshot_mode(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),
@@ -1039,7 +1031,7 @@ class MainWindow(QMainWindow):
                 adb=adb,
                 screenshot_directory=screenshot_directory,
                 poll_interval=poll_interval,
-                screenshot_save_level=self._effective_screenshot_level(),
+                screenshot_mode=self._effective_screenshot_mode(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),

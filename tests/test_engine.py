@@ -297,7 +297,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="key",
+                screenshot_mode="key",
             ).run(task)
             files = list(screenshot_directory.glob("capture-demo_screenshot_*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
@@ -319,7 +319,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshot_mode="none",
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
@@ -752,7 +752,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="key",
+                screenshot_mode="key",
             ).run(task)
             step_files = list(screenshot_directory.glob("key-demo_step_01_*.png"))
             key_files = list(screenshot_directory.glob("key-demo_screenshot_*.png"))
@@ -777,7 +777,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshot_mode="none",
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
@@ -800,7 +800,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshot_mode="none",
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
@@ -824,7 +824,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="all",
+                screenshot_mode="all",
                 log_callback=logs.append,
             ).run(task)
             step_files = list(screenshot_directory.glob("all-demo_step_01_*.png"))
@@ -998,10 +998,10 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_save_level="bad",
+            screenshot_mode="bad",
         )
 
-        self.assertEqual(engine.screenshot_save_level, "all")
+        self.assertEqual(engine.screenshot_mode, "all")
 
     def test_run_with_retries_sleeps_between_failed_attempts(self) -> None:
         sleeps: list[float] = []
@@ -1272,7 +1272,7 @@ class EngineTests(unittest.TestCase):
             BrokenScreenshotAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            screenshot_save_level="all",
+            screenshot_mode="all",
         )
 
         engine._capture_checkpoint("demo", 1, "before")
@@ -1286,7 +1286,7 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_save_level="key",
+            screenshot_mode="key",
             progress_callback=lambda index, total, description: progress.append(
                 (index, total, description)
             ),
@@ -1467,7 +1467,7 @@ class EngineTests(unittest.TestCase):
                 adb,
                 Path(directory),
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshot_mode="none",
                 ocr_boxes_client=lambda _image: [
                     ("领取", [(100, 200), (300, 200), (300, 300), (100, 300)])
                 ],
@@ -1522,7 +1522,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_save_level="none",
+                    screenshot_mode="none",
                     ocr_boxes_client=stateful_ocr,
                 ).run(task)
 
@@ -1641,7 +1641,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_save_level="none",
+                    screenshot_mode="none",
                     ocr_boxes_client=ocr,
                 )
                 for task in tasks:

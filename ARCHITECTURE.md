@@ -127,7 +127,7 @@ FREE/
 - `detect` / `click` 支持 **OCR 文本、UI 文本、UI resource-id、坐标** 四种定位方式，带超时轮询（`timeout_seconds` / `interval_seconds`）；
 - `detect` 把结果写入引擎的上下文 `_context`（`result_var`、`*_found`、`*_coord`、`*_count`），`if` / `loop_until` 读取该上下文做分支与循环；
 - 停止语义：`request_stop()` 置 `threading.Event`，引擎在每次动作前后、轮询循环内、`_sleep()` 分片（≤0.2s）中检查，命中则抛 `StopRequested`；
-- 截图：`screenshot_save_level` 为 `all` 时每步前后各存一张 `_capture_checkpoint`；`capture_screenshot` 动作保存「关键页截图」（会作为邮件附件）；失败时保存失败截图。
+- 截图：`capture_screenshot` 动作保存「关键页截图」（会作为邮件附件）；失败时保存失败截图；保存数由 `screenshot_max_files` 控制（0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个）。
 
 ### 4.4 设备接入层
 
@@ -148,7 +148,7 @@ FREE/
 | `action_schema.py` | 动作原语规格（见第 6 节）：`ParamSpec` 参数描述、必填/可选/枚举校验、`effective_parameters()` 默认值填充、`describe_action()` 中文描述 |
 | `constants.py` | 屏幕规格常量与上限常量（`MAX_TASK_EXECUTION_COUNT=10`、`MAX_OUTPUT_FILE_LIMIT=1000`） |
 | `helpers.py` | 无第三方依赖的小工具与回调类型别名（`noop_log`、`number_setting`、`clamp_coord`、`string_list`、`deep_copy` 等），供全包复用且不产生循环导入 |
-| `logging_utils.py` | 日志行归一化（统一时间戳前缀）与落盘筛选（`should_write_log_line` 按摘要标记过滤 summary 级别） |
+| `logging_utils.py` | 日志行归一化（统一时间戳前缀）；日志完整落盘，不设级别筛选 |
 | `notifications.py` | SMTP 邮件通知：把 `RunResult` / `BatchRunResult` 渲染为文本 + HTML 正文（内嵌关键页截图），支持 SSL/STARTTLS、`notify_on` 状态过滤；**任何失败都不改变任务结果** |
 | `pruning.py` | 输出文件治理：`prune_files()` 按数量上限保留最新 N 个；`clear_output_files()` 手动全清；模式为 `recycle`（进回收站）或 `permanent`（直接删除） |
 | `trash.py` | Windows 回收站封装：通过 `SHFileOperationW` 实现可恢复删除 |
@@ -272,10 +272,10 @@ sequenceDiagram
 - **固定模拟器规格**：1080×1920 / 480dpi 是硬性要求，连接后校验，避免坐标与 OCR 定位因分辨率漂移——这也是点击坐标直接落屏的前提。
 - **引擎纯逻辑化**：所有副作用（时间、ADB、日志、截图）通过构造参数注入（`sleep_function`、`log_callback`、`progress_callback`、`ocr_client`），测试用 mock 替换即可；引擎对 Qt 的唯一依赖是 `QImage` 截图校验。
 - **回调而非继承**：UI 与引擎通过信号/回调传递日志与进度，`helpers.noop_log` 提供空实现，避免大量 `if callback:` 分支。
-- **日志归一化在输出边界**：引擎消息自带时间戳，worker/清理消息不带，统一由 `format_log_line()` 在进入 UI 与落盘前规范化；落盘内容由 `should_write_log_line()` 按 `log_output_level` 过滤（summary 级别只保留摘要标记行）。
+- **日志归一化在输出边界**：引擎消息自带时间戳，worker/清理消息不带，统一由 `format_log_line()` 在进入 UI 与落盘前规范化；日志始终完整写入（不设摘要级别过滤）。
 - **可恢复优先**：删除文件默认走 Windows 回收站（`trash.py`），只有显式选择 `permanent` 才直接删除。
 - **运行产物上限**：日志/截图数量上限、任务执行次数上限均在 `constants.py` 集中并由两侧（配置清洗与执行逻辑）共同钳制。
-- **中文用户体验**：所有用户可见文案、日志标记、错误消息为中文；`SUMMARY_MARKERS` 等日志筛选依赖这些稳定前缀。
+- **中文用户体验**：所有用户可见文案、日志标记、错误消息为中文。
 - **类型检查**：项目全量 mypy 检查；仅三个动态构建 UI 的模块（`action_editor_dialogs`、`settings_dialog`、`task_manager`）豁免 `attr-defined` 错误码，其余错误码保持完全检查（见 `pyproject.toml`）。
 
 ## 9. 测试策略

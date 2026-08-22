@@ -27,8 +27,6 @@
   "mumu_directory": "",
   "command_timeout_seconds": 15.0,
   "poll_interval_seconds": 0.5,
-  "screenshot_save_level": "key",
-  "log_output_level": "all",
   "log_directory": "logs",
   "screenshot_directory": "screenshots",
   "ocr_model_directory": "models",

@@ -69,12 +69,10 @@ def send_run_notification(
         return False
 
     task_names = {task.id: task.name for task in tasks}
-    include_screenshots = str(settings.get("screenshot_save_level", "all")) != "none"
     subject, blocks = _format_message(
         summary,
         task_names,
         configuration,
-        include_screenshots=include_screenshots,
         config_errors=config_errors,
     )
     attachments = _collect_attachment_paths(blocks)
@@ -194,7 +192,6 @@ def _format_message(
     summary: RunSummary,
     task_names: dict[str, str],
     configuration: dict[str, Any],
-    include_screenshots: bool = True,
     config_errors: Iterable[TaskFileError] = (),
 ) -> tuple[str, list[_EmailBlock]]:
     prefix = (
@@ -209,7 +206,7 @@ def _format_message(
             RunStatus.STOPPED: f"⏹已停止：{task_name}",
         }.get(summary.status, f"{summary.status.value}：{task_name}")
         blocks = [_EmailBlock(status_line)]
-        blocks.extend(_task_screenshot_blocks(summary, include_screenshots))
+        blocks.extend(_task_screenshot_blocks(summary))
         error_block = _config_error_block(config_errors)
         if error_block is not None:
             blocks.append(error_block)
@@ -257,7 +254,7 @@ def _format_message(
     for result in ordered_results:
         task_name = task_names.get(result.task_id, result.task_id)
         blocks.append(_EmailBlock(task_name))
-        blocks.extend(_task_screenshot_blocks(result, include_screenshots))
+        blocks.extend(_task_screenshot_blocks(result))
     return prefix, blocks
 
 
@@ -272,12 +269,7 @@ def _config_error_block(errors: Iterable[TaskFileError]) -> _EmailBlock | None:
     return _EmailBlock("\n".join(lines))
 
 
-def _task_screenshot_blocks(
-    result: RunResult,
-    include_screenshots: bool,
-) -> list[_EmailBlock]:
-    if not include_screenshots:
-        return []
+def _task_screenshot_blocks(result: RunResult) -> list[_EmailBlock]:
     paths = unique_existing_paths((*result.key_screenshots, result.screenshot))
     if not paths:
         return []

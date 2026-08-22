@@ -418,7 +418,7 @@ class SettingsDialogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
-            dialog.log_output_level_combo.setCurrentIndex(1)
+            dialog.log_max_files_edit.setText("88")
             with patch.object(SettingsDialog, "_confirm_discard", return_value=False) as confirm:
                 dialog.reject()
             confirm.assert_called_once()
@@ -745,7 +745,6 @@ class SettingsDialogTests(unittest.TestCase):
             dialog = self._make_dialog(base)
             collected = dialog._collect_settings()
             self.assertEqual(collected["log_max_files"], 5)
-            self.assertEqual(collected["screenshot_save_level"], "key")
             self.assertEqual(collected["screenshot_max_files"], 5)
             self.assertEqual(collected["cleanup_mode"], "recycle")
             self.assertEqual(collected["mumu_vmindex"], 0)
@@ -753,7 +752,7 @@ class SettingsDialogTests(unittest.TestCase):
             self.assertEqual(collected["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
 
-    def test_screenshot_save_level_loads_saves_and_detects_changes(self) -> None:
+    def test_screenshot_save_level_is_no_longer_editable_or_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             (base / "config").mkdir()
@@ -764,13 +763,35 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             try:
-                self.assertEqual(dialog.screenshot_save_level_combo.currentData(), "all")
+                self.assertFalse(hasattr(dialog, "screenshot_save_level_combo"))
                 self.assertFalse(dialog._has_unsaved_changes())
-                dialog.screenshot_save_level_combo.setCurrentIndex(0)
-                self.assertTrue(dialog._has_unsaved_changes())
+                collected = dialog._collect_settings()
+                self.assertNotIn("screenshot_save_level", collected)
                 dialog._save()
                 saved = json.loads(settings_path.read_text(encoding="utf-8"))
-                self.assertEqual(saved["screenshot_save_level"], "key")
+                self.assertNotIn("screenshot_save_level", saved)
+            finally:
+                dialog.deleteLater()
+
+    def test_screenshot_limit_field_is_not_affected_by_stale_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "config").mkdir()
+            settings_path = base / "config" / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {"screenshot_save_level": "all", "screenshot_max_files": 5},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            dialog = self._make_dialog(base)
+            try:
+                self.assertTrue(dialog.screenshot_max_files_edit.isEnabled())
+                self.assertEqual(dialog.screenshot_max_files_edit.text(), "5")
+                self.assertFalse(dialog._has_unsaved_changes())
+                dialog.screenshot_max_files_edit.setText("999")
+                self.assertTrue(dialog._has_unsaved_changes())
             finally:
                 dialog.deleteLater()
 
@@ -816,7 +837,7 @@ class SettingsDialogTests(unittest.TestCase):
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["email_notification"]["smtp_username"], "new@qq.com")
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 4)
-            self.assertEqual(saved["screenshot_save_level"], "key")
+            self.assertNotIn("screenshot_save_level", saved)
             self.assertIn("smtp_password", saved["email_notification"])
             self.assertEqual(saved["mumu_directory"], "")
             self.assertEqual(saved["qq_group_name"], "")

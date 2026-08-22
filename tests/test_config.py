@@ -328,7 +328,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["cleanup_mode"], "recycle")
         self.assertIsInstance(settings["email_notification"], dict)
 
-    def test_screenshot_and_log_levels_are_normalized_from_config(self) -> None:
+    def test_output_settings_levels_are_dropped_and_retention_kept(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
@@ -344,9 +344,9 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_save_level"], "all")
-        self.assertEqual(settings["log_output_level"], "all")
         self.assertEqual(settings["log_max_files"], 5)
+        self.assertNotIn("screenshot_save_level", settings)
+        self.assertNotIn("log_output_level", settings)
 
     def test_unknown_log_fields_are_removed(self) -> None:
         for stale_value in ("summary", "none"):
@@ -359,8 +359,8 @@ class ConfigTests(unittest.TestCase):
                     )
                     settings = load_settings(path)
 
-                self.assertEqual(settings["log_output_level"], "all")
                 self.assertEqual(settings["log_max_files"], -1)
+                self.assertNotIn("log_output_level", settings)
                 self.assertNotIn("stale_log_field", settings)
 
     def test_log_max_files_is_authoritative(self) -> None:
@@ -373,7 +373,7 @@ class ConfigTests(unittest.TestCase):
             settings = load_settings(path)
 
         self.assertEqual(settings["log_max_files"], 5)
-        self.assertEqual(settings["log_output_level"], "all")
+        self.assertNotIn("log_output_level", settings)
 
     def test_unknown_log_enabled_is_removed(self) -> None:
         for value in (False, True, "false"):
@@ -427,20 +427,23 @@ class ConfigTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     settings = load_settings(settings_path)
-                self.assertEqual(settings["screenshot_save_level"], "key")
+                self.assertNotIn("screenshot_save_level", settings)
                 self.assertNotIn("stale_screenshot_flag", settings)
 
-    def test_screenshot_level_rejects_invalid_values(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config_directory = Path(directory) / "config"
-            config_directory.mkdir()
-            settings_path = config_directory / "settings.json"
-            settings_path.write_text(
-                json.dumps({"screenshot_save_level": "everything"}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+    def test_screenshot_level_is_dropped_from_config(self) -> None:
+        for stale_level in ("all", "key", "everything"):
+            with self.subTest(stale_level=stale_level):
+                with tempfile.TemporaryDirectory() as directory:
+                    config_directory = Path(directory) / "config"
+                    config_directory.mkdir()
+                    settings_path = config_directory / "settings.json"
+                    settings_path.write_text(
+                        json.dumps({"screenshot_save_level": stale_level}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    settings = load_settings(settings_path)
+                self.assertNotIn("screenshot_save_level", settings)
+                self.assertEqual(settings["screenshot_max_files"], -1)
 
     def test_mumu_directory_is_derived_from_adb_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -477,7 +480,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["screenshot_max_files"], 5)
         self.assertEqual(settings["cleanup_mode"], "recycle")
 
-    def test_screenshot_max_files_semantics_and_forced_level(self) -> None:
+    def test_screenshot_max_files_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
@@ -494,7 +497,7 @@ class ConfigTests(unittest.TestCase):
             )
             settings = load_settings(settings_path)
         self.assertEqual(settings["screenshot_max_files"], -1)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+        self.assertNotIn("screenshot_save_level", settings)
 
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
@@ -506,7 +509,7 @@ class ConfigTests(unittest.TestCase):
             )
             settings = load_settings(settings_path)
         self.assertEqual(settings["screenshot_max_files"], 0)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+        self.assertNotIn("screenshot_save_level", settings)
 
     def test_missing_settings_is_rejected_without_bundled_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

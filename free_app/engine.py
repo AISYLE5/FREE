@@ -36,7 +36,7 @@ class StopRequested(RuntimeError):
 class ActionError(RuntimeError):
     pass
 
-SCREENSHOT_SAVE_LEVELS = ("none", "key", "all")
+SCREENSHOT_MODES = ("none", "key", "all")
 
 class AutomationEngine:
     def __init__(
@@ -48,7 +48,7 @@ class AutomationEngine:
         sleep_function: Callable[[float], None] = time.sleep,
         ocr_client: OcrCallback | None = None,
         ocr_boxes_client: OcrBoxCallback | None = None,
-        screenshot_save_level: str = "all",
+        screenshot_mode: str = "all",
         progress_callback: ProgressCallback | None = None,
     ):
         self.adb = adb
@@ -58,9 +58,9 @@ class AutomationEngine:
         self.sleep_function = sleep_function
         self.ocr_client = ocr_client
         self.ocr_boxes_client = ocr_boxes_client
-        if screenshot_save_level not in SCREENSHOT_SAVE_LEVELS:
-            screenshot_save_level = "all"
-        self.screenshot_save_level = screenshot_save_level
+        if screenshot_mode not in SCREENSHOT_MODES:
+            screenshot_mode = "all"
+        self.screenshot_mode = screenshot_mode
         self.progress_callback = progress_callback
         self._run_stamp = ""
         self._stop_event = Event()
@@ -264,12 +264,12 @@ class AutomationEngine:
 
     def _execute_capture_screenshot(self, params: dict[str, Any]) -> None:
         label = "screenshot"
-        if self.screenshot_save_level in {"key", "all"}:
+        if self.screenshot_mode in {"key", "all"}:
             task_id = self._current_task.id if self._current_task is not None else "unknown"
             self._capture_key_screenshot(task_id, label)
         else:
             self._log(
-                f"截图动作跳过: {label}（当前 screenshot_save_level={self.screenshot_save_level}）"
+                f"截图动作跳过: {label}（当前 screenshot_mode={self.screenshot_mode}）"
             )
 
     def _detect(self, params: dict[str, Any]) -> None:
@@ -728,7 +728,7 @@ class AutomationEngine:
         return path
 
     def _capture_checkpoint(self, task_id: str, step: int, label: str) -> None:
-        if self.screenshot_save_level != "all":
+        if self.screenshot_mode != "all":
             return
         try:
             path = self._write_screenshot(
@@ -784,7 +784,7 @@ class AutomationEngine:
         self._log(f"================ {label} ================")
 
     def _save_failure_screenshot(self, task_id: str, step: int) -> Path | None:
-        if self.screenshot_save_level == "none":
+        if self.screenshot_mode == "none":
             return None
         try:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

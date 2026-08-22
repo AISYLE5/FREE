@@ -83,7 +83,7 @@ class TaskWorker(QObject):
         adb: AdbClient,
         screenshot_directory: Path,
         poll_interval: float,
-        screenshot_save_level: str = "all",
+        screenshot_mode: str = "all",
         settings: dict[str, Any] | None = None,
         base_directory: Path | None = None,
         config_errors: tuple[TaskFileError, ...] = (),
@@ -93,7 +93,7 @@ class TaskWorker(QObject):
         self.task = task
         self.settings = settings or {}
         self.config_errors = tuple(config_errors)
-        self.screenshot_save_level = screenshot_save_level
+        self.screenshot_mode = screenshot_mode
         self.debug = bool(debug)
         self._stop_requested = Event()
         self.base_directory = base_directory or Path.cwd()
@@ -110,7 +110,7 @@ class TaskWorker(QObject):
             poll_interval=poll_interval,
             ocr_client=ocr_client,
             ocr_boxes_client=ocr_client.recognize_with_boxes,
-            screenshot_save_level=self.screenshot_save_level,
+            screenshot_mode=self.screenshot_mode,
         )
 
     @Slot()
@@ -214,7 +214,7 @@ class BatchTaskWorker(QObject):
         adb: AdbClient,
         screenshot_directory: Path,
         poll_interval: float,
-        screenshot_save_level: str = "all",
+        screenshot_mode: str = "all",
         settings: dict[str, Any] | None = None,
         base_directory: Path | None = None,
         config_errors: tuple[TaskFileError, ...] = (),
@@ -226,7 +226,7 @@ class BatchTaskWorker(QObject):
         self.config_errors = tuple(config_errors)
         self.screenshot_directory = screenshot_directory
         self.poll_interval = poll_interval
-        self.screenshot_save_level = screenshot_save_level
+        self.screenshot_mode = screenshot_mode
         self.base_directory = base_directory or Path.cwd()
         self._stop_requested = Event()
         self._current_engine: AutomationEngine | None = None
@@ -249,7 +249,7 @@ class BatchTaskWorker(QObject):
             poll_interval=self.poll_interval,
             ocr_client=ocr_client,
             ocr_boxes_client=ocr_client.recognize_with_boxes,
-            screenshot_save_level=self.screenshot_save_level,
+            screenshot_mode=self.screenshot_mode,
         )
 
     @Slot()

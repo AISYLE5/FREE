@@ -67,9 +67,7 @@ _DEFAULT_CLOSE_MUMU_AFTER_RUN = False
 _DEFAULT_CLOSE_MUMU_APP_AFTER_RUN = False
 _DEFAULT_EMAIL_ENABLED = False
 _DEFAULT_TASK_EXECUTION_COUNT = 1
-_DEFAULT_LOG_OUTPUT_LEVEL = "all"
 _DEFAULT_LOG_MAX_FILES = -1
-_DEFAULT_SCREENSHOT_SAVE_LEVEL = "key"
 _DEFAULT_SCREENSHOT_MAX_FILES = -1
 _DEFAULT_CLEANUP_MODE = "recycle"
 _DEFAULT_MUMU_DIRECTORY = ""
@@ -573,15 +571,6 @@ class SettingsDialog(QDialog):
         self.email_enabled = self._make_switch_button("email_enabled")
         runtime_form.addRow("任务结束后发送邮件通知", self.email_enabled)
 
-        self.log_output_level_combo = SettingsComboBox()
-        self.log_output_level_combo.addItem("完整日志", "all")
-        self.log_output_level_combo.addItem("摘要日志", "summary")
-        self.log_output_level_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        runtime_form.addRow("日志输出级别", self.log_output_level_combo)
-
         self._add_int_field(
             runtime_form,
             "log_max_files_edit",
@@ -590,15 +579,6 @@ class SettingsDialog(QDialog):
             1000,
             "-1 无限制 ; 0 不保存",
         )
-
-        self.screenshot_save_level_combo = SettingsComboBox()
-        self.screenshot_save_level_combo.addItem("成功与失败", "key")
-        self.screenshot_save_level_combo.addItem("每次动作", "all")
-        self.screenshot_save_level_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        runtime_form.addRow("截图输出级别", self.screenshot_save_level_combo)
 
         self._add_int_field(
             runtime_form,
@@ -1199,15 +1179,7 @@ class SettingsDialog(QDialog):
             for task in self.tasks:
                 value = stored_execution_counts.get(task.id, _DEFAULT_TASK_EXECUTION_COUNT)
                 self._task_execution_combos[task.id].setValue(self._clamped_int(value, 1, 0, 10))
-            output_index = self.log_output_level_combo.findData(
-                self.settings.get("log_output_level", _DEFAULT_LOG_OUTPUT_LEVEL)
-            )
-            self.log_output_level_combo.setCurrentIndex(max(0, output_index))
             self.log_max_files_edit.setText(str(self.settings.get("log_max_files", _DEFAULT_LOG_MAX_FILES)))
-            screenshot_level_index = self.screenshot_save_level_combo.findData(
-                str(self.settings.get("screenshot_save_level", _DEFAULT_SCREENSHOT_SAVE_LEVEL))
-            )
-            self.screenshot_save_level_combo.setCurrentIndex(max(0, screenshot_level_index))
             self.screenshot_max_files_edit.setText(
                 str(self.settings.get("screenshot_max_files", _DEFAULT_SCREENSHOT_MAX_FILES))
             )
@@ -1316,16 +1288,8 @@ class SettingsDialog(QDialog):
             )
             if self._task_execution_combos[task.id].value() != expected:
                 return True
-        if self.log_output_level_combo.currentData() != str(
-            self.settings.get("log_output_level", _DEFAULT_LOG_OUTPUT_LEVEL)
-        ):
-            return True
         if self._clamped_int(self.log_max_files_edit.text(), _DEFAULT_LOG_MAX_FILES, -1, 1000) != int(
             self.settings.get("log_max_files", _DEFAULT_LOG_MAX_FILES)
-        ):
-            return True
-        if self.screenshot_save_level_combo.currentData() != str(
-            self.settings.get("screenshot_save_level", _DEFAULT_SCREENSHOT_SAVE_LEVEL)
         ):
             return True
         if self._clamped_int(
@@ -1436,11 +1400,9 @@ class SettingsDialog(QDialog):
             "close_mumu_after_run": self.close_mumu_after_run.isChecked(),
             "close_mumu_app_after_run": self.close_mumu_app_after_run.isChecked(),
             "task_execution_counts": task_execution_counts,
-            "log_output_level": self.log_output_level_combo.currentData(),
             "log_max_files": self._clamped_int(
                 self.log_max_files_edit.text(), _DEFAULT_LOG_MAX_FILES, -1, 1000
             ),
-            "screenshot_save_level": self.screenshot_save_level_combo.currentData(),
             "screenshot_max_files": self._clamped_int(
                 self.screenshot_max_files_edit.text(), _DEFAULT_SCREENSHOT_MAX_FILES, -1, 1000
             ),
@@ -1531,9 +1493,7 @@ class SettingsDialog(QDialog):
             main_settings["close_mumu_after_run"] = collected["close_mumu_after_run"]
             main_settings["close_mumu_app_after_run"] = collected["close_mumu_app_after_run"]
             main_settings["task_execution_counts"] = collected["task_execution_counts"]
-            main_settings["log_output_level"] = collected["log_output_level"]
             main_settings["log_max_files"] = collected["log_max_files"]
-            main_settings["screenshot_save_level"] = collected["screenshot_save_level"]
             main_settings["screenshot_max_files"] = collected["screenshot_max_files"]
             main_settings["cleanup_mode"] = collected["cleanup_mode"]
             main_settings["mumu_directory"] = collected["mumu_directory"]

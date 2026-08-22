@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from free_app.config import TaskFileError
 from free_app.models import BatchRunResult, RunResult, RunStatus, TaskDefinition
-from free_app.notifications import _split_addresses, send_run_notification
+from free_app.notifications import _split_addresses, _task_screenshot_blocks, send_run_notification
 
 
 class NotificationTests(unittest.TestCase):
@@ -243,30 +243,9 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(send_run_notification(settings, RunResult("demo", RunStatus.SUCCESS, 1, 1)))
         smtp_class.assert_not_called()
 
-    @patch("free_app.notifications.smtplib.SMTP_SSL")
-    def test_none_screenshot_level_sends_without_screenshot_text_or_images(
-        self, smtp_class: MagicMock
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            image_path = Path(directory) / "demo.png"
-            image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
-            result = RunResult(
-                "demo",
-                RunStatus.SUCCESS,
-                1,
-                1,
-                key_screenshots=(image_path,),
-            )
-            settings = dict(self.settings)
-            settings["screenshot_save_level"] = "none"
-
-            client = smtp_class.return_value.__enter__.return_value
-            self.assertTrue(send_run_notification(settings, result, [self.task], []))
-            message = client.send_message.call_args.args[0]
-
-        self.assertFalse(message.is_multipart())
-        self.assertNotIn("截图", self._message_body(message))
-        self.assertEqual(list(message.iter_attachments()), [])
+    def test_email_without_screenshot_paths_has_no_screenshot_blocks(self) -> None:
+        result = RunResult("demo", RunStatus.SUCCESS, 1, 1)
+        self.assertEqual(_task_screenshot_blocks(result), [])
 
     @patch("free_app.notifications.smtplib.SMTP_SSL")
     def test_notify_on_excludes_unwanted_status(self, smtp_class: MagicMock) -> None:
