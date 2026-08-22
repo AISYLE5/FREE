@@ -67,11 +67,11 @@ _DEFAULT_CLOSE_MUMU_AFTER_RUN = False
 _DEFAULT_CLOSE_MUMU_APP_AFTER_RUN = False
 _DEFAULT_EMAIL_ENABLED = False
 _DEFAULT_TASK_EXECUTION_COUNT = 1
-_DEFAULT_LOG_MAX_FILES = -1
-_DEFAULT_SCREENSHOT_MAX_FILES = -1
+_DEFAULT_MAX_LOG_FILES = -1
+_DEFAULT_MAX_SCREENSHOT_FILES = -1
 _DEFAULT_CLEANUP_MODE = "recycle"
 _DEFAULT_MUMU_DIRECTORY = ""
-_DEFAULT_MUMU_VMINDEX = 0
+_DEFAULT_MUMU_VM_INDEX = 0
 _DEFAULT_QQ_GROUP_NAME = "群聊-转发广告"
 _DEFAULT_DET_MODEL = "PP-OCRv6_small_det"
 _DEFAULT_REC_MODEL = "PP-OCRv6_small_rec"
@@ -81,7 +81,7 @@ _DEFAULT_SMTP_SECURITY = "ssl"
 _DEFAULT_SMTP_USERNAME = ""
 _DEFAULT_SMTP_PASSWORD = ""
 _DEFAULT_SUBJECT_PREFIX = "FREE"
-_DEFAULT_TIMEOUT_SECONDS = 20
+_DEFAULT_SMTP_TIMEOUT_SECONDS = 20
 _DEFAULT_RECIPIENTS = ""
 
 
@@ -530,7 +530,7 @@ class SettingsDialog(QDialog):
         self.subject_prefix = QLineEdit()
         form.addRow("邮件主题", self.subject_prefix)
 
-        self._add_int_field(form, "timeout_seconds", "发送超时", 1, 120)
+        self._add_int_field(form, "smtp_timeout_seconds", "发送超时", 1, 120)
         page.addWidget(self._build_option_card(None, form))
 
         self.test_button = QPushButton("发送测试邮件")
@@ -573,7 +573,7 @@ class SettingsDialog(QDialog):
 
         self._add_int_field(
             runtime_form,
-            "log_max_files_edit",
+            "max_log_files_edit",
             "日志最大保存数",
             -1,
             1000,
@@ -582,7 +582,7 @@ class SettingsDialog(QDialog):
 
         self._add_int_field(
             runtime_form,
-            "screenshot_max_files_edit",
+            "max_screenshot_files_edit",
             "截图最大保存数",
             -1,
             1000,
@@ -632,9 +632,9 @@ class SettingsDialog(QDialog):
 
         instance_row = QHBoxLayout()
         instance_row.setSpacing(8)
-        self.mumu_vmindex_combo = SettingsComboBox()
-        self.mumu_vmindex_combo.setMinimumWidth(180)
-        instance_row.addWidget(self.mumu_vmindex_combo, 1)
+        self.mumu_vm_index_combo = SettingsComboBox()
+        self.mumu_vm_index_combo.setMinimumWidth(180)
+        instance_row.addWidget(self.mumu_vm_index_combo, 1)
         self.mumu_refresh_button = QPushButton("刷新实例")
         self.mumu_refresh_button.setObjectName("settingsBrowseButton")
         self.mumu_refresh_button.clicked.connect(self._refresh_mumu_instances)
@@ -1179,9 +1179,9 @@ class SettingsDialog(QDialog):
             for task in self.tasks:
                 value = stored_execution_counts.get(task.id, _DEFAULT_TASK_EXECUTION_COUNT)
                 self._task_execution_combos[task.id].setValue(self._clamped_int(value, 1, 0, 10))
-            self.log_max_files_edit.setText(str(self.settings.get("log_max_files", _DEFAULT_LOG_MAX_FILES)))
-            self.screenshot_max_files_edit.setText(
-                str(self.settings.get("screenshot_max_files", _DEFAULT_SCREENSHOT_MAX_FILES))
+            self.max_log_files_edit.setText(str(self.settings.get("max_log_files", _DEFAULT_MAX_LOG_FILES)))
+            self.max_screenshot_files_edit.setText(
+                str(self.settings.get("max_screenshot_files", _DEFAULT_MAX_SCREENSHOT_FILES))
             )
             cleanup_index = self.cleanup_mode_combo.findData(
                 self.settings.get("cleanup_mode", _DEFAULT_CLEANUP_MODE)
@@ -1198,7 +1198,7 @@ class SettingsDialog(QDialog):
             self._refresh_mumu_instances()
             self.smtp_host.setText(str(configuration.get("smtp_host", _DEFAULT_SMTP_HOST)))
             self.smtp_port.setText(str(configuration.get("smtp_port", _DEFAULT_SMTP_PORT)))
-            security = str(configuration.get("security", _DEFAULT_SMTP_SECURITY)).lower()
+            security = str(configuration.get("smtp_security", _DEFAULT_SMTP_SECURITY)).lower()
             security_index = self.smtp_security.findData(security)
             self.smtp_security.setCurrentIndex(max(0, security_index))
             self.smtp_username.setText(str(configuration.get("smtp_username", _DEFAULT_SMTP_USERNAME)))
@@ -1208,7 +1208,7 @@ class SettingsDialog(QDialog):
                 recipients = ", ".join(str(item) for item in recipients)
             self.recipients.setText(str(recipients))
             self.subject_prefix.setText(str(configuration.get("subject_prefix", _DEFAULT_SUBJECT_PREFIX)))
-            self.timeout_seconds.setText(str(configuration.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)))
+            self.smtp_timeout_seconds.setText(str(configuration.get("smtp_timeout_seconds", _DEFAULT_SMTP_TIMEOUT_SECONDS)))
         finally:
             self._loading_settings = False
 
@@ -1239,7 +1239,7 @@ class SettingsDialog(QDialog):
             return True
         if (
             self.smtp_security.currentData()
-            != str(configuration.get("security", _DEFAULT_SMTP_SECURITY)).lower()
+            != str(configuration.get("smtp_security", _DEFAULT_SMTP_SECURITY)).lower()
         ):
             return True
         if (
@@ -1267,8 +1267,8 @@ class SettingsDialog(QDialog):
             configuration.get("subject_prefix", _DEFAULT_SUBJECT_PREFIX)
         ):
             return True
-        if self._clamped_int(self.timeout_seconds.text(), _DEFAULT_TIMEOUT_SECONDS, 1, 120) != int(
-            configuration.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)
+        if self._clamped_int(self.smtp_timeout_seconds.text(), _DEFAULT_SMTP_TIMEOUT_SECONDS, 1, 120) != int(
+            configuration.get("smtp_timeout_seconds", _DEFAULT_SMTP_TIMEOUT_SECONDS)
         ):
             return True
         if self.close_mumu_after_run.isChecked() != bool(
@@ -1288,13 +1288,13 @@ class SettingsDialog(QDialog):
             )
             if self._task_execution_combos[task.id].value() != expected:
                 return True
-        if self._clamped_int(self.log_max_files_edit.text(), _DEFAULT_LOG_MAX_FILES, -1, 1000) != int(
-            self.settings.get("log_max_files", _DEFAULT_LOG_MAX_FILES)
+        if self._clamped_int(self.max_log_files_edit.text(), _DEFAULT_MAX_LOG_FILES, -1, 1000) != int(
+            self.settings.get("max_log_files", _DEFAULT_MAX_LOG_FILES)
         ):
             return True
         if self._clamped_int(
-            self.screenshot_max_files_edit.text(), 0, -1, 1000
-        ) != int(self.settings.get("screenshot_max_files", _DEFAULT_SCREENSHOT_MAX_FILES)):
+            self.max_screenshot_files_edit.text(), 0, -1, 1000
+        ) != int(self.settings.get("max_screenshot_files", _DEFAULT_MAX_SCREENSHOT_FILES)):
             return True
         if self.cleanup_mode_combo.currentData() != str(
             self.settings.get("cleanup_mode", _DEFAULT_CLEANUP_MODE)
@@ -1309,10 +1309,10 @@ class SettingsDialog(QDialog):
         ):
             return True
         try:
-            current_vmindex = int(self.mumu_vmindex_combo.currentData())
+            current_vmindex = int(self.mumu_vm_index_combo.currentData())
         except (TypeError, ValueError):
             current_vmindex = 0
-        if current_vmindex != int(self.settings.get("mumu_vmindex", _DEFAULT_MUMU_VMINDEX)):
+        if current_vmindex != int(self.settings.get("mumu_vm_index", _DEFAULT_MUMU_VM_INDEX)):
             return True
         if self._selected_model("det") != str(self.settings.get("ocr_det_model", _DEFAULT_DET_MODEL)):
             return True
@@ -1345,8 +1345,8 @@ class SettingsDialog(QDialog):
     def _refresh_mumu_instances(self) -> None:
         """Query the current MuMu CLI for player instances and repopulate the combo."""
 
-        selected_index = self.mumu_vmindex_combo.currentData()
-        self.mumu_vmindex_combo.clear()
+        selected_index = self.mumu_vm_index_combo.currentData()
+        self.mumu_vm_index_combo.clear()
         try:
             controller = MuMuController(self._cli_path_for_refresh(), command_timeout=10)
             instances = controller.list_instances()
@@ -1357,18 +1357,18 @@ class SettingsDialog(QDialog):
             for index in sorted(instances):
                 name = instances[index]
                 label = f"#{index} {name}" if name != str(index) else f"#{index}"
-                self.mumu_vmindex_combo.addItem(label, index)
+                self.mumu_vm_index_combo.addItem(label, index)
         else:
             for index in range(10):
-                self.mumu_vmindex_combo.addItem(f"默认 #{index}", index)
+                self.mumu_vm_index_combo.addItem(f"默认 #{index}", index)
 
         preferred = (
-            int(self.settings.get("mumu_vmindex", 0))
+            int(self.settings.get("mumu_vm_index", 0))
             if selected_index is None
             else int(selected_index)
         )
-        found = self.mumu_vmindex_combo.findData(preferred)
-        self.mumu_vmindex_combo.setCurrentIndex(max(0, found))
+        found = self.mumu_vm_index_combo.findData(preferred)
+        self.mumu_vm_index_combo.setCurrentIndex(max(0, found))
 
     def _cli_path_for_refresh(self) -> Path:
         folder_value = self.mumu_directory_edit.text().strip()
@@ -1400,19 +1400,19 @@ class SettingsDialog(QDialog):
             "close_mumu_after_run": self.close_mumu_after_run.isChecked(),
             "close_mumu_app_after_run": self.close_mumu_app_after_run.isChecked(),
             "task_execution_counts": task_execution_counts,
-            "log_max_files": self._clamped_int(
-                self.log_max_files_edit.text(), _DEFAULT_LOG_MAX_FILES, -1, 1000
+            "max_log_files": self._clamped_int(
+                self.max_log_files_edit.text(), _DEFAULT_MAX_LOG_FILES, -1, 1000
             ),
-            "screenshot_max_files": self._clamped_int(
-                self.screenshot_max_files_edit.text(), _DEFAULT_SCREENSHOT_MAX_FILES, -1, 1000
+            "max_screenshot_files": self._clamped_int(
+                self.max_screenshot_files_edit.text(), _DEFAULT_MAX_SCREENSHOT_FILES, -1, 1000
             ),
             "cleanup_mode": self.cleanup_mode_combo.currentData(),
             "mumu_directory": self.mumu_directory_edit.text().strip(),
             "qq_group_name": self.qq_group_name_edit.text().strip(),
-            "mumu_vmindex": int(
+            "mumu_vm_index": int(
                 0
-                if self.mumu_vmindex_combo.currentData() is None
-                else self.mumu_vmindex_combo.currentData()
+                if self.mumu_vm_index_combo.currentData() is None
+                else self.mumu_vm_index_combo.currentData()
             ),
             "ocr_det_model": self._selected_model("det"),
             "ocr_rec_model": self._selected_model("rec"),
@@ -1421,14 +1421,14 @@ class SettingsDialog(QDialog):
                 "enabled": self.email_enabled.isChecked(),
                 "smtp_host": self.smtp_host.text().strip(),
                 "smtp_port": self._clamped_int(self.smtp_port.text(), _DEFAULT_SMTP_PORT, 1, 65535),
-                "security": self.smtp_security.currentData(),
+                "smtp_security": self.smtp_security.currentData(),
                 "smtp_username": self.smtp_username.text().strip(),
                 "smtp_password": self.smtp_password.text(),
                 "recipients": recipients,
                 "subject_prefix": self.subject_prefix.text().strip() or _DEFAULT_SUBJECT_PREFIX,
                 "notify_on": ["success", "failed", "stopped"],
-                "timeout_seconds": self._clamped_int(
-                    self.timeout_seconds.text(), _DEFAULT_TIMEOUT_SECONDS, 1, 120
+                "smtp_timeout_seconds": self._clamped_int(
+                    self.smtp_timeout_seconds.text(), _DEFAULT_SMTP_TIMEOUT_SECONDS, 1, 120
                 ),
             }
         }
@@ -1493,12 +1493,12 @@ class SettingsDialog(QDialog):
             main_settings["close_mumu_after_run"] = collected["close_mumu_after_run"]
             main_settings["close_mumu_app_after_run"] = collected["close_mumu_app_after_run"]
             main_settings["task_execution_counts"] = collected["task_execution_counts"]
-            main_settings["log_max_files"] = collected["log_max_files"]
-            main_settings["screenshot_max_files"] = collected["screenshot_max_files"]
+            main_settings["max_log_files"] = collected["max_log_files"]
+            main_settings["max_screenshot_files"] = collected["max_screenshot_files"]
             main_settings["cleanup_mode"] = collected["cleanup_mode"]
             main_settings["mumu_directory"] = collected["mumu_directory"]
             main_settings["qq_group_name"] = collected["qq_group_name"]
-            main_settings["mumu_vmindex"] = collected["mumu_vmindex"]
+            main_settings["mumu_vm_index"] = collected["mumu_vm_index"]
             main_settings["ocr_det_model"] = collected["ocr_det_model"]
             main_settings["ocr_rec_model"] = collected["ocr_rec_model"]
             main_settings["ocr_download_source"] = collected["ocr_download_source"]

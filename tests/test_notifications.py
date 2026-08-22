@@ -23,7 +23,7 @@ class NotificationTests(unittest.TestCase):
                 "enabled": True,
                 "smtp_host": "smtp.qq.com",
                 "smtp_port": 465,
-                "security": "ssl",
+                "smtp_security": "ssl",
                 "smtp_username": "sender@qq.com",
                 "smtp_password": "authorization-code",
                 "recipients": ["receiver@example.com"],
@@ -178,7 +178,7 @@ class NotificationTests(unittest.TestCase):
     def test_plain_security_is_no_longer_supported(self, smtp_class: MagicMock) -> None:
         settings = dict(self.settings)
         settings["email_notification"] = dict(self.settings["email_notification"])
-        settings["email_notification"]["security"] = "none"
+        settings["email_notification"]["smtp_security"] = "none"
         logs: list[str] = []
         result = RunResult("demo", RunStatus.SUCCESS, 1, 1)
 
@@ -194,7 +194,7 @@ class NotificationTests(unittest.TestCase):
         client = smtp_class.return_value.__enter__.return_value
         settings = dict(self.settings)
         settings["email_notification"] = dict(self.settings["email_notification"])
-        settings["email_notification"].update({"security": "starttls", "smtp_port": 587})
+        settings["email_notification"].update({"smtp_security": "starttls", "smtp_port": 587})
 
         self.assertTrue(send_run_notification(settings, RunResult("demo", RunStatus.SUCCESS, 1, 1)))
 
@@ -226,7 +226,7 @@ class NotificationTests(unittest.TestCase):
     ) -> None:
         settings = dict(self.settings)
         settings["email_notification"] = dict(self.settings["email_notification"])
-        settings["email_notification"]["security"] = "unsupported"
+        settings["email_notification"]["smtp_security"] = "unsupported"
         logs: list[str] = []
 
         self.assertFalse(

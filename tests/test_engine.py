@@ -297,14 +297,13 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="key",
             ).run(task)
             files = list(screenshot_directory.glob("capture-demo_screenshot_*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
         self.assertEqual(len(files), 1)
         self.assertEqual(len(result.key_screenshots), 1)
 
-    def test_capture_screenshot_action_skipped_at_none_level(self) -> None:
+    def test_capture_screenshot_action_skipped_when_screenshots_disabled(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="capture-none-demo",
@@ -319,7 +318,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
@@ -737,7 +736,7 @@ class EngineTests(unittest.TestCase):
             self.assertIsNotNone(result.screenshot)
             self.assertTrue(result.screenshot.exists())
 
-    def test_key_level_captures_screenshot_actions_only(self) -> None:
+    def test_screenshots_enabled_captures_screenshot_actions_only(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="key-demo",
@@ -752,7 +751,6 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="key",
             ).run(task)
             step_files = list(screenshot_directory.glob("key-demo_step_01_*.png"))
             key_files = list(screenshot_directory.glob("key-demo_screenshot_*.png"))
@@ -762,7 +760,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(key_files), 1)
         self.assertEqual(len(result.key_screenshots), 1)
 
-    def test_none_level_saves_no_action_or_key_screenshots(self) -> None:
+    def test_screenshots_disabled_saves_nothing(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="none-demo",
@@ -777,7 +775,7 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
@@ -785,7 +783,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(files, [])
         self.assertEqual(result.key_screenshots, ())
 
-    def test_none_level_skips_failure_screenshot_too(self) -> None:
+    def test_screenshots_disabled_skips_failure_screenshot(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="none-failure-demo",
@@ -800,44 +798,13 @@ class EngineTests(unittest.TestCase):
                 screenshot_directory,
                 poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
         self.assertEqual(result.status, RunStatus.FAILED)
         self.assertIsNone(result.screenshot)
         self.assertEqual(files, [])
-
-    def test_all_level_keeps_checkpoints_and_key_pages(self) -> None:
-        adb = FakeAdb()
-        logs: list[str] = []
-        task = TaskDefinition(
-            id="all-demo",
-            name="All demo",
-            package="demo.package",
-            actions=(Action("capture_screenshot", {}),),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            screenshot_directory = Path(directory)
-            result = AutomationEngine(
-                adb,
-                screenshot_directory,
-                poll_interval=0,
-                sleep_function=lambda _seconds: None,
-                screenshot_mode="all",
-                log_callback=logs.append,
-            ).run(task)
-            step_files = list(screenshot_directory.glob("all-demo_step_01_*.png"))
-            key_files = list(screenshot_directory.glob("all-demo_screenshot_*.png"))
-
-        self.assertEqual(result.status, RunStatus.SUCCESS)
-        self.assertEqual(len(step_files), 2)
-        self.assertEqual(len(key_files), 1)
-        self.assertEqual(len(result.key_screenshots), 1)
-        joined_logs = "\n".join(logs)
-        self.assertIn("截图[before]", joined_logs)
-        self.assertIn("截图[after]", joined_logs)
-        self.assertIn("关键页面截图:", joined_logs)
 
     def test_lifecycle_actions_use_task_level_package_and_wait(self) -> None:
         adb = FakeAdb()
@@ -994,14 +961,23 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(adb.launched, ["tv.danmaku.bili", "tv.danmaku.bili"])
         self.assertTrue(any("警告: 启动 2 次后前台仍为 app.lawnchair" in message for message in logs))
 
-    def test_invalid_screenshot_level_falls_back_to_all(self) -> None:
+    def test_invalid_screenshots_enabled_value_is_coerced_to_bool(self) -> None:
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_mode="bad",
+            screenshots_enabled="bad",
         )
 
-        self.assertEqual(engine.screenshot_mode, "all")
+        self.assertIs(engine.screenshots_enabled, True)
+
+    def test_screenshots_enabled_false_disables_service(self) -> None:
+        engine = AutomationEngine(
+            FakeAdb(),
+            Path("screenshots"),
+            screenshots_enabled=0,
+        )
+
+        self.assertIs(engine.screenshots_enabled, False)
 
     def test_run_with_retries_sleeps_between_failed_attempts(self) -> None:
         sleeps: list[float] = []
@@ -1262,7 +1238,7 @@ class EngineTests(unittest.TestCase):
 
         self.assertTrue(any("读取失败" in message for message in logs))
 
-    def test_capture_checkpoint_and_key_screenshot_ignore_screenshot_failures(self) -> None:
+    def test_screenshot_helpers_ignore_screenshot_failures(self) -> None:
         class BrokenScreenshotAdb(FakeAdb):
             def screenshot(self) -> bytes:
                 raise OSError("screenshot failed")
@@ -1272,10 +1248,8 @@ class EngineTests(unittest.TestCase):
             BrokenScreenshotAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            screenshot_mode="all",
         )
 
-        engine._capture_checkpoint("demo", 1, "before")
         engine._capture_key_screenshot("demo", "成功")
         self.assertIsNone(engine._save_failure_screenshot("demo", 1))
 
@@ -1286,7 +1260,7 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_mode="key",
+            screenshots_enabled=True,
             progress_callback=lambda index, total, description: progress.append(
                 (index, total, description)
             ),
@@ -1467,7 +1441,7 @@ class EngineTests(unittest.TestCase):
                 adb,
                 Path(directory),
                 sleep_function=lambda _seconds: None,
-                screenshot_mode="none",
+                screenshots_enabled=False,
                 ocr_boxes_client=lambda _image: [
                     ("领取", [(100, 200), (300, 200), (300, 300), (100, 300)])
                 ],
@@ -1522,7 +1496,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_mode="none",
+                    screenshots_enabled=False,
                     ocr_boxes_client=stateful_ocr,
                 ).run(task)
 
@@ -1641,7 +1615,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_mode="none",
+                    screenshots_enabled=False,
                     ocr_boxes_client=ocr,
                 )
                 for task in tasks:

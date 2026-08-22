@@ -36,7 +36,6 @@ class StopRequested(RuntimeError):
 class ActionError(RuntimeError):
     pass
 
-SCREENSHOT_MODES = ("none", "key", "all")
 
 class AutomationEngine:
     def __init__(
@@ -48,7 +47,7 @@ class AutomationEngine:
         sleep_function: Callable[[float], None] = time.sleep,
         ocr_client: OcrCallback | None = None,
         ocr_boxes_client: OcrBoxCallback | None = None,
-        screenshot_mode: str = "all",
+        screenshots_enabled: bool = True,
         progress_callback: ProgressCallback | None = None,
     ):
         self.adb = adb
@@ -58,9 +57,7 @@ class AutomationEngine:
         self.sleep_function = sleep_function
         self.ocr_client = ocr_client
         self.ocr_boxes_client = ocr_boxes_client
-        if screenshot_mode not in SCREENSHOT_MODES:
-            screenshot_mode = "all"
-        self.screenshot_mode = screenshot_mode
+        self.screenshots_enabled = bool(screenshots_enabled)
         self.progress_callback = progress_callback
         self._run_stamp = ""
         self._stop_event = Event()
@@ -107,13 +104,11 @@ class AutomationEngine:
                     display_params.setdefault("package", task.package)
                 self._log(f"动作参数: {self._format_parameters(display_params)}")
                 self._log_current_package("动作前台")
-                self._capture_checkpoint(task.id, index, "before")
                 self._run_with_retries(action)
                 completed = index
                 elapsed = time.monotonic() - started
                 self._log(f"[{index}/{total}] 完成: {current_action}，耗时 {elapsed:.2f}s")
                 self._log_current_package("动作完成前台")
-                self._capture_checkpoint(task.id, index, "after")
             self._log(f"任务完成: {task.name}")
             total_elapsed = time.monotonic() - run_started
             self._log(
@@ -264,13 +259,11 @@ class AutomationEngine:
 
     def _execute_capture_screenshot(self, params: dict[str, Any]) -> None:
         label = "screenshot"
-        if self.screenshot_mode in {"key", "all"}:
+        if self.screenshots_enabled:
             task_id = self._current_task.id if self._current_task is not None else "unknown"
             self._capture_key_screenshot(task_id, label)
         else:
-            self._log(
-                f"截图动作跳过: {label}（当前 screenshot_mode={self.screenshot_mode}）"
-            )
+            self._log(f"截图动作跳过: {label}（截图已禁用）")
 
     def _detect(self, params: dict[str, Any]) -> None:
         """Detect OCR/UI state and optionally store text, count and coordinates."""
@@ -727,26 +720,6 @@ class AutomationEngine:
         path.write_bytes(data)
         return path
 
-    def _capture_checkpoint(self, task_id: str, step: int, label: str) -> None:
-        if self.screenshot_mode != "all":
-            return
-        try:
-            path = self._write_screenshot(
-                f"{task_id}_step_{step:02d}_{label}_{self._run_stamp}.png"
-            )
-            image = QImage.fromData(path.read_bytes())
-            if image.isNull():
-                self._log(f"截图[{label}]已保存但无法解析: {path}")
-            elif (image.width(), image.height()) != SCREEN_SIZE:
-                self._log(
-                    f"截图[{label}]已保存但尺寸异常: {path} "
-                    f"({image.width()}x{image.height()})"
-                )
-            else:
-                self._log(f"截图[{label}]: {path}")
-        except Exception as exc:
-            self._log(f"截图[{label}]失败，不影响动作: {exc}")
-
     def _capture_key_screenshot(self, task_id: str, label: str) -> None:
         """Capture the success page referenced by the screenshot action."""
 
@@ -784,7 +757,7 @@ class AutomationEngine:
         self._log(f"================ {label} ================")
 
     def _save_failure_screenshot(self, task_id: str, step: int) -> Path | None:
-        if self.screenshot_mode == "none":
+        if not self.screenshots_enabled:
             return None
         try:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

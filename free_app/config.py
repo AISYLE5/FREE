@@ -19,7 +19,7 @@ DEFAULT_NOTIFY_ON = ["success", "failed", "stopped"]
 NATIVE_SETTING_KEYS = {
     "adb_path",
     "mumu_cli_path",
-    "mumu_vmindex",
+    "mumu_vm_index",
     "auto_start_mumu",
     "close_mumu_after_run",
     "close_mumu_app_after_run",
@@ -40,8 +40,8 @@ NATIVE_SETTING_KEYS = {
     "ocr_det_model",
     "ocr_rec_model",
     "email_notification",
-    "log_max_files",
-    "screenshot_max_files",
+    "max_log_files",
+    "max_screenshot_files",
     "cleanup_mode",
     "task_execution_counts",
     "ocr_download_source",
@@ -50,13 +50,13 @@ NATIVE_EMAIL_KEYS = {
     "enabled",
     "smtp_host",
     "smtp_port",
-    "security",
+    "smtp_security",
     "smtp_username",
     "smtp_password",
     "recipients",
     "subject_prefix",
     "notify_on",
-    "timeout_seconds",
+    "smtp_timeout_seconds",
 }
 
 
@@ -409,21 +409,21 @@ def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     for key, flag_default in bool_defaults.items():
         sanitized[key] = _native_bool(sanitized.get(key), flag_default)
 
-    # 是否保存截图由 screenshot_max_files 控制：0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个。
+    # 是否保存截图由 max_screenshot_files 控制：0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个。
     mumu_directory = sanitized.get("mumu_directory")
     if not isinstance(mumu_directory, str) or not mumu_directory.strip():
         sanitized["mumu_directory"] = _derive_mumu_directory(sanitized)
 
     numeric_defaults = {
-        "mumu_vmindex": (0, True),
+        "mumu_vm_index": (0, True),
         "mumu_start_timeout_seconds": (90, False),
         "mumu_poll_interval_seconds": (1, False),
         "mumu_command_timeout_seconds": (30, False),
         "cleanup_delay_seconds": (3, False),
         "command_timeout_seconds": (15, False),
         "poll_interval_seconds": (0.5, False),
-        "log_max_files": (-1, True),
-        "screenshot_max_files": (-1, True),
+        "max_log_files": (-1, True),
+        "max_screenshot_files": (-1, True),
     }
     for key, (numeric_default, integer) in numeric_defaults.items():
         sanitized[key] = _native_number(
@@ -445,9 +445,9 @@ def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         )
     sanitized["task_execution_counts"] = normalized_execution_counts
 
-    sanitized["log_max_files"] = min(MAX_OUTPUT_FILE_LIMIT, max(-1, sanitized["log_max_files"]))
-    sanitized["screenshot_max_files"] = min(
-        MAX_OUTPUT_FILE_LIMIT, max(-1, sanitized["screenshot_max_files"])
+    sanitized["max_log_files"] = min(MAX_OUTPUT_FILE_LIMIT, max(-1, sanitized["max_log_files"]))
+    sanitized["max_screenshot_files"] = min(
+        MAX_OUTPUT_FILE_LIMIT, max(-1, sanitized["max_screenshot_files"])
     )
 
     cleanup_mode = sanitized.get("cleanup_mode")
@@ -473,13 +473,13 @@ def _sanitize_email(settings: dict[str, Any]) -> dict[str, Any]:
         else DEFAULT_SMTP_HOST
     )
     email["smtp_port"] = _native_number(email.get("smtp_port"), 465, integer=True)
-    security = email.get("security")
+    security = email.get("smtp_security")
     security = (
         security.strip().lower()
         if isinstance(security, str) and security.strip().lower() in SMTP_SECURITY_LEVELS
         else "ssl"
     )
-    email["security"] = security
+    email["smtp_security"] = security
     username = email.get("smtp_username", "")
     email["smtp_username"] = username if isinstance(username, str) else ""
     password = email.get("smtp_password", "")
@@ -502,8 +502,8 @@ def _sanitize_email(settings: dict[str, Any]) -> dict[str, Any]:
         if isinstance(notify_on, list)
         else DEFAULT_NOTIFY_ON
     )
-    email["timeout_seconds"] = max(
-        1, int(_native_number(email.get("timeout_seconds"), 10, integer=True))
+    email["smtp_timeout_seconds"] = max(
+        1, int(_native_number(email.get("smtp_timeout_seconds"), 10, integer=True))
     )
     return email
 

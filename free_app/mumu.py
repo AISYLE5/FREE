@@ -144,7 +144,7 @@ def mumu_adb_address_from_settings(settings: dict[str, Any]) -> str | None:
     """
 
     controller = _mumu_controller(settings)
-    instance_info = controller.instance_info(str(settings.get("mumu_vmindex", "0")))
+    instance_info = controller.instance_info(str(settings.get("mumu_vm_index", "0")))
     return mumu_adb_address(instance_info)
 
 
@@ -166,7 +166,7 @@ def connect_to_mumu(settings: dict[str, Any]) -> AdbClient:
         ),
     )
     controller = _mumu_controller(settings)
-    instance_info = controller.instance_info(str(settings.get("mumu_vmindex", "0")))
+    instance_info = controller.instance_info(str(settings.get("mumu_vm_index", "0")))
     address = mumu_adb_address(instance_info)
     if not address:
         raise MuMuError("MuMu 未返回动态 ADB 地址")
@@ -192,7 +192,7 @@ def shutdown_mumu(
     if not bool(settings.get("close_mumu_after_run", False)):
         return False
 
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", "0"))
     try:
         controller = _mumu_controller(settings)
         command_timeout = number_setting(
@@ -284,7 +284,7 @@ def prepare_device(
     auto_start = bool(settings.get("auto_start_mumu", False))
     check_stop()
 
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", "0"))
     controller = _mumu_controller(settings)
     timeout = number_setting(settings, "mumu_start_timeout_seconds", 90.0, minimum=0.0)
     poll_interval = number_setting(settings, "mumu_poll_interval_seconds", 1.0)
@@ -398,7 +398,7 @@ def connect_to_running_mumu(
     """Connect ADB to an already-running MuMu instance without startup logic."""
 
     log = noop_log(log_callback)
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", "0"))
     controller = _mumu_controller(settings)
     instance_info = controller.instance_info(vmindex)
     address = mumu_adb_address(instance_info)

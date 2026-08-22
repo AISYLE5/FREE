@@ -115,7 +115,7 @@ class MumuTests(unittest.TestCase):
         ):
             device = connect_to_running_mumu(
                 adb,
-                {"mumu_vmindex": "1", "auto_start_mumu": True},
+                {"mumu_vm_index": "1", "auto_start_mumu": True},
             )
 
         self.assertEqual(adb.serial, "127.0.0.1:16416")
@@ -129,7 +129,7 @@ class MumuTests(unittest.TestCase):
             return_value={"adb_host_ip": "127.0.0.1", "adb_port": 0},
         ):
             with self.assertRaisesRegex(AdbError, "未返回动态 ADB 地址"):
-                connect_to_running_mumu(adb, {"mumu_vmindex": "1"})
+                connect_to_running_mumu(adb, {"mumu_vm_index": "1"})
 
     def test_connect_to_running_mumu_uses_default_timeout_on_bad_setting(self) -> None:
         adb = FakeAdb()
@@ -141,7 +141,7 @@ class MumuTests(unittest.TestCase):
                 connect_to_running_mumu(
                     adb,
                     {
-                        "mumu_vmindex": "1",
+                        "mumu_vm_index": "1",
                         "mumu_command_timeout_seconds": "bad",
                     },
                 )
@@ -162,7 +162,7 @@ class MumuTests(unittest.TestCase):
             return_value={"adb_host_ip": "127.0.0.1", "adb_port": 16416},
         ):
             with self.assertRaisesRegex(AdbError, "ADB 设备未上线"):
-                connect_to_running_mumu(adb, {"mumu_vmindex": "1"})
+                connect_to_running_mumu(adb, {"mumu_vm_index": "1"})
 
     def test_controller_builds_instance_launch_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -384,7 +384,7 @@ class MumuTests(unittest.TestCase):
                     shutdown_mumu(
                         {
                             "close_mumu_after_run": True,
-                            "mumu_vmindex": 1,
+                            "mumu_vm_index": 1,
                             "mumu_cli_path": str(executable),
                         },
                         logs.append,
@@ -418,7 +418,7 @@ class MumuTests(unittest.TestCase):
                 shutdown_mumu(
                     {
                         "close_mumu_after_run": True,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_command_timeout_seconds": 1,
                         "mumu_poll_interval_seconds": 0,
@@ -553,7 +553,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 2,
@@ -584,7 +584,7 @@ class MumuTests(unittest.TestCase):
                 adb,
                 {
                     "auto_start_mumu": False,
-                    "mumu_vmindex": 1,
+                    "mumu_vm_index": 1,
                     "mumu_cli_path": "C:/mumu-cli.exe",
                 },
             )
@@ -614,7 +614,7 @@ class MumuTests(unittest.TestCase):
                     NoDevicesAdb(),
                     {
                         "auto_start_mumu": False,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_start_timeout_seconds": 0,
                         "mumu_poll_interval_seconds": 0,
@@ -656,7 +656,7 @@ class MumuTests(unittest.TestCase):
                     adb,
                     {
                         "auto_start_mumu": False,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_start_timeout_seconds": 1,
                         "mumu_poll_interval_seconds": 0,
@@ -703,7 +703,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 30,
             "mumu_poll_interval_seconds": 10,
@@ -742,7 +742,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 2,
@@ -790,7 +790,7 @@ class MumuTests(unittest.TestCase):
                 adb,
                 {
                     "auto_start_mumu": False,
-                    "mumu_vmindex": 0,
+                    "mumu_vm_index": 0,
                     "mumu_cli_path": "C:/mumu-cli.exe",
                     "mumu_start_timeout_seconds": 1,
                     "mumu_poll_interval_seconds": 0,
@@ -844,7 +844,7 @@ class MumuTests(unittest.TestCase):
         controller = DynamicController()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 0,
@@ -886,7 +886,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 0.001,
             "mumu_poll_interval_seconds": 0,
@@ -915,7 +915,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 0,
             "mumu_poll_interval_seconds": 0,

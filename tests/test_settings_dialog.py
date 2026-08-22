@@ -196,17 +196,17 @@ class SettingsDialogTests(unittest.TestCase):
             base = Path(directory)
             dialog = self._make_dialog(base)
             try:
-                dialog.settings["mumu_vmindex"] = 2
+                dialog.settings["mumu_vm_index"] = 2
                 controller = MagicMock()
                 controller.list_instances.return_value = {0: "0", 2: "Work"}
                 with patch("free_app.settings_dialog.MuMuController", return_value=controller):
                     dialog._refresh_mumu_instances()
 
                 self.assertEqual(
-                    [dialog.mumu_vmindex_combo.itemText(i) for i in range(dialog.mumu_vmindex_combo.count())],
+                    [dialog.mumu_vm_index_combo.itemText(i) for i in range(dialog.mumu_vm_index_combo.count())],
                     ["#0", "#2 Work"],
                 )
-                self.assertEqual(dialog.mumu_vmindex_combo.currentData(), 2)
+                self.assertEqual(dialog.mumu_vm_index_combo.currentData(), 2)
             finally:
                 dialog.deleteLater()
 
@@ -221,9 +221,9 @@ class SettingsDialogTests(unittest.TestCase):
                 ):
                     dialog._refresh_mumu_instances()
 
-                self.assertEqual(dialog.mumu_vmindex_combo.count(), 10)
-                self.assertEqual(dialog.mumu_vmindex_combo.itemData(0), 0)
-                self.assertEqual(dialog.mumu_vmindex_combo.itemData(9), 9)
+                self.assertEqual(dialog.mumu_vm_index_combo.count(), 10)
+                self.assertEqual(dialog.mumu_vm_index_combo.itemData(0), 0)
+                self.assertEqual(dialog.mumu_vm_index_combo.itemData(9), 9)
             finally:
                 dialog.deleteLater()
 
@@ -302,8 +302,8 @@ class SettingsDialogTests(unittest.TestCase):
             (base / "config" / "settings.json").write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                         "stale_field": 99,
                         "stale_counts": {"hanserclub": 9},
@@ -418,7 +418,7 @@ class SettingsDialogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
-            dialog.log_max_files_edit.setText("88")
+            dialog.max_log_files_edit.setText("88")
             with patch.object(SettingsDialog, "_confirm_discard", return_value=False) as confirm:
                 dialog.reject()
             confirm.assert_called_once()
@@ -702,7 +702,7 @@ class SettingsDialogTests(unittest.TestCase):
                     {
                         "email_notification": {
                             "smtp_port": 2525,
-                            "security": "starttls",
+                            "smtp_security": "starttls",
                         }
                     },
                     ensure_ascii=False,
@@ -734,8 +734,8 @@ class SettingsDialogTests(unittest.TestCase):
             (base / "config" / "settings.json").write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                     },
                     ensure_ascii=False,
@@ -744,10 +744,10 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             collected = dialog._collect_settings()
-            self.assertEqual(collected["log_max_files"], 5)
-            self.assertEqual(collected["screenshot_max_files"], 5)
+            self.assertEqual(collected["max_log_files"], 5)
+            self.assertEqual(collected["max_screenshot_files"], 5)
             self.assertEqual(collected["cleanup_mode"], "recycle")
-            self.assertEqual(collected["mumu_vmindex"], 0)
+            self.assertEqual(collected["mumu_vm_index"], 0)
             self.assertTrue(collected["task_execution_counts"])
             self.assertEqual(collected["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
@@ -780,17 +780,17 @@ class SettingsDialogTests(unittest.TestCase):
             settings_path = base / "config" / "settings.json"
             settings_path.write_text(
                 json.dumps(
-                    {"screenshot_save_level": "all", "screenshot_max_files": 5},
+                    {"screenshot_save_level": "all", "max_screenshot_files": 5},
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
             try:
-                self.assertTrue(dialog.screenshot_max_files_edit.isEnabled())
-                self.assertEqual(dialog.screenshot_max_files_edit.text(), "5")
+                self.assertTrue(dialog.max_screenshot_files_edit.isEnabled())
+                self.assertEqual(dialog.max_screenshot_files_edit.text(), "5")
                 self.assertFalse(dialog._has_unsaved_changes())
-                dialog.screenshot_max_files_edit.setText("999")
+                dialog.max_screenshot_files_edit.setText("999")
                 self.assertTrue(dialog._has_unsaved_changes())
             finally:
                 dialog.deleteLater()
@@ -852,8 +852,8 @@ class SettingsDialogTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                         "stale_field": "x",
                     },
@@ -867,7 +867,7 @@ class SettingsDialogTests(unittest.TestCase):
 
             self.assertNotIn("stale_field", saved)
             self.assertNotIn("stale_email_field", saved["email_notification"])
-            self.assertEqual(saved["log_max_files"], 5)
+            self.assertEqual(saved["max_log_files"], 5)
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
 

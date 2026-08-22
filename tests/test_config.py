@@ -55,14 +55,14 @@ class ConfigTests(unittest.TestCase):
             base = Path(directory)
             template = base / "settings.example.json"
             settings_path = base / "settings.json"
-            template.write_text(json.dumps({"mumu_vmindex": 4}), encoding="utf-8")
+            template.write_text(json.dumps({"mumu_vm_index": 4}), encoding="utf-8")
 
             self.assertTrue(ensure_settings_file(settings_path))
-            self.assertEqual(load_settings(settings_path)["mumu_vmindex"], 4)
+            self.assertEqual(load_settings(settings_path)["mumu_vm_index"], 4)
 
-            settings_path.write_text(json.dumps({"mumu_vmindex": 7}), encoding="utf-8")
+            settings_path.write_text(json.dumps({"mumu_vm_index": 7}), encoding="utf-8")
             self.assertFalse(ensure_settings_file(settings_path))
-            self.assertEqual(load_settings(settings_path)["mumu_vmindex"], 7)
+            self.assertEqual(load_settings(settings_path)["mumu_vm_index"], 7)
 
     def test_shipped_config_has_no_smtp_credentials(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -299,10 +299,10 @@ class ConfigTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "mumu_vmindex": "bad",
+                        "mumu_vm_index": "bad",
                         "cleanup_delay_seconds": "bad",
-                        "log_max_files": "bad",
-                        "screenshot_max_files": "bad",
+                        "max_log_files": "bad",
+                        "max_screenshot_files": "bad",
                         "task_execution_counts": {
                             "demo": "bad",
                             "": 4,
@@ -317,10 +317,10 @@ class ConfigTests(unittest.TestCase):
             )
             settings = load_settings(path)
 
-        self.assertEqual(settings["mumu_vmindex"], 0)
+        self.assertEqual(settings["mumu_vm_index"], 0)
         self.assertEqual(settings["cleanup_delay_seconds"], 3)
-        self.assertEqual(settings["log_max_files"], -1)
-        self.assertEqual(settings["screenshot_max_files"], -1)
+        self.assertEqual(settings["max_log_files"], -1)
+        self.assertEqual(settings["max_screenshot_files"], -1)
         self.assertEqual(settings["task_execution_counts"]["valid"], 10)
         self.assertNotIn("demo", settings["task_execution_counts"])
         self.assertEqual(settings["task_execution_counts"]["3"], 2)
@@ -338,13 +338,13 @@ class ConfigTests(unittest.TestCase):
                     {
                         "screenshot_save_level": "all",
                         "log_output_level": "all",
-                        "log_max_files": 5,
+                        "max_log_files": 5,
                     }
                 ),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["log_max_files"], 5)
+        self.assertEqual(settings["max_log_files"], 5)
         self.assertNotIn("screenshot_save_level", settings)
         self.assertNotIn("log_output_level", settings)
 
@@ -359,20 +359,20 @@ class ConfigTests(unittest.TestCase):
                     )
                     settings = load_settings(path)
 
-                self.assertEqual(settings["log_max_files"], -1)
+                self.assertEqual(settings["max_log_files"], -1)
                 self.assertNotIn("log_output_level", settings)
                 self.assertNotIn("stale_log_field", settings)
 
-    def test_log_max_files_is_authoritative(self) -> None:
+    def test_max_log_files_is_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             path.write_text(
-                json.dumps({"stale_log_field": "none", "log_max_files": 5}),
+                json.dumps({"stale_log_field": "none", "max_log_files": 5}),
                 encoding="utf-8",
             )
             settings = load_settings(path)
 
-        self.assertEqual(settings["log_max_files"], 5)
+        self.assertEqual(settings["max_log_files"], 5)
         self.assertNotIn("log_output_level", settings)
 
     def test_unknown_log_enabled_is_removed(self) -> None:
@@ -386,7 +386,7 @@ class ConfigTests(unittest.TestCase):
                     )
                     settings = load_settings(path)
 
-                self.assertEqual(settings["log_max_files"], -1)
+                self.assertEqual(settings["max_log_files"], -1)
                 self.assertNotIn("stale_enabled", settings)
 
     def test_unknown_smtp_fields_are_removed(self) -> None:
@@ -399,7 +399,7 @@ class ConfigTests(unittest.TestCase):
                             {
                                 "email_notification": {
                                     "stale_field": "first@example.com; second@example.com",
-                                    "security": unsupported_security,
+                                    "smtp_security": unsupported_security,
                                 }
                             }
                         ),
@@ -409,7 +409,7 @@ class ConfigTests(unittest.TestCase):
 
                 email = settings["email_notification"]
                 self.assertEqual(email["recipients"], [])
-                self.assertEqual(email["security"], "ssl")
+                self.assertEqual(email["smtp_security"], "ssl")
                 self.assertNotIn("stale_field", email)
 
     def test_unknown_screenshot_flag_is_removed(self) -> None:
@@ -443,7 +443,7 @@ class ConfigTests(unittest.TestCase):
                     )
                     settings = load_settings(settings_path)
                 self.assertNotIn("screenshot_save_level", settings)
-                self.assertEqual(settings["screenshot_max_files"], -1)
+                self.assertEqual(settings["max_screenshot_files"], -1)
 
     def test_mumu_directory_is_derived_from_adb_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -468,19 +468,19 @@ class ConfigTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                     }
                 ),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["log_max_files"], 5)
-        self.assertEqual(settings["screenshot_max_files"], 5)
+        self.assertEqual(settings["max_log_files"], 5)
+        self.assertEqual(settings["max_screenshot_files"], 5)
         self.assertEqual(settings["cleanup_mode"], "recycle")
 
-    def test_screenshot_max_files_semantics(self) -> None:
+    def test_max_screenshot_files_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
@@ -488,7 +488,7 @@ class ConfigTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "screenshot_max_files": -5,
+                        "max_screenshot_files": -5,
                         "screenshot_save_level": "none",
                     },
                     ensure_ascii=False,
@@ -496,7 +496,7 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_max_files"], -1)
+        self.assertEqual(settings["max_screenshot_files"], -1)
         self.assertNotIn("screenshot_save_level", settings)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -504,11 +504,11 @@ class ConfigTests(unittest.TestCase):
             config_directory.mkdir()
             settings_path = config_directory / "settings.json"
             settings_path.write_text(
-                json.dumps({"screenshot_max_files": 0}, ensure_ascii=False),
+                json.dumps({"max_screenshot_files": 0}, ensure_ascii=False),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_max_files"], 0)
+        self.assertEqual(settings["max_screenshot_files"], 0)
         self.assertNotIn("screenshot_save_level", settings)
 
     def test_missing_settings_is_rejected_without_bundled_defaults(self) -> None:
@@ -714,15 +714,15 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "任务不支持字段"):
                 load_task_directory(Path(directory) / "tasks")
 
-    def test_mumu_vmindex_is_loaded_as_integer(self) -> None:
+    def test_mumu_vm_index_is_loaded_as_integer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text(json.dumps({"mumu_vmindex": 3}), encoding="utf-8")
+            path.write_text(json.dumps({"mumu_vm_index": 3}), encoding="utf-8")
             settings = load_settings(path)
             missing_path = Path(directory) / "missing" / "settings.json"
 
-        self.assertEqual(settings["mumu_vmindex"], 3)
-        self.assertIsInstance(settings["mumu_vmindex"], int)
+        self.assertEqual(settings["mumu_vm_index"], 3)
+        self.assertIsInstance(settings["mumu_vm_index"], int)
         with self.assertRaises(FileNotFoundError):
             load_settings(missing_path)
 
@@ -898,11 +898,11 @@ class ConfigTests(unittest.TestCase):
     def test_save_settings_creates_parent_and_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "settings.json"
-            save_settings(path, {"log_max_files": 7})
+            save_settings(path, {"max_log_files": 7})
 
             loaded = load_settings(path)
 
-        self.assertEqual(loaded["log_max_files"], 7)
+        self.assertEqual(loaded["max_log_files"], 7)
 
     def test_top_level_task_file_that_is_not_an_object_is_broken(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

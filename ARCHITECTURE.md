@@ -127,7 +127,7 @@ FREE/
 - `detect` / `click` 支持 **OCR 文本、UI 文本、UI resource-id、坐标** 四种定位方式，带超时轮询（`timeout_seconds` / `interval_seconds`）；
 - `detect` 把结果写入引擎的上下文 `_context`（`result_var`、`*_found`、`*_coord`、`*_count`），`if` / `loop_until` 读取该上下文做分支与循环；
 - 停止语义：`request_stop()` 置 `threading.Event`，引擎在每次动作前后、轮询循环内、`_sleep()` 分片（≤0.2s）中检查，命中则抛 `StopRequested`；
-- 截图：`capture_screenshot` 动作保存「关键页截图」（会作为邮件附件）；失败时保存失败截图；保存数由 `screenshot_max_files` 控制（0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个）。
+- 截图：`capture_screenshot` 动作保存「关键页截图」（会作为邮件附件）；失败时保存失败截图；保存数由 `max_screenshot_files` 控制（0 = 不保存，负数 = 不限制，正数 = 保留最新 N 个）。
 
 ### 4.4 设备接入层
 

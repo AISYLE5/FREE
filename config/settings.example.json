@@ -1,7 +1,7 @@
 {
   "adb_path": "",
   "mumu_cli_path": "",
-  "mumu_vmindex": 0,
+  "mumu_vm_index": 0,
   "auto_start_mumu": true,
   "close_mumu_after_run": false,
   "close_mumu_app_after_run": false,
@@ -36,7 +36,7 @@
     "enabled": false,
     "smtp_host": "smtp.qq.com",
     "smtp_port": 465,
-    "security": "ssl",
+    "smtp_security": "ssl",
     "smtp_username": "",
     "smtp_password": "",
     "recipients": [],
@@ -46,10 +46,10 @@
       "failed",
       "stopped"
     ],
-    "timeout_seconds": 30
+    "smtp_timeout_seconds": 30
   },
-  "log_max_files": 10,
-  "screenshot_max_files": 20,
+  "max_log_files": 10,
+  "max_screenshot_files": 20,
   "cleanup_mode": "recycle",
   "task_execution_counts": {
     "hanserclub": 1,

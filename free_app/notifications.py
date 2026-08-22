@@ -63,7 +63,7 @@ def send_run_notification(
 
     try:
         port = int(configuration.get("smtp_port", 465))
-        timeout = max(1.0, float(configuration.get("timeout_seconds", 20)))
+        timeout = max(1.0, float(configuration.get("smtp_timeout_seconds", 20)))
     except (TypeError, ValueError) as exc:
         log(f"邮件通知跳过：SMTP 端口或超时时间无效: {exc}")
         return False
@@ -79,7 +79,7 @@ def send_run_notification(
     message = _build_email(subject, sender, recipients, blocks, attachments, log)
 
     try:
-        security = str(configuration.get("security", "ssl")).strip().lower()
+        security = str(configuration.get("smtp_security", "ssl")).strip().lower()
         if security == "ssl":
             with smtplib.SMTP_SSL(host, port, timeout=timeout) as client:
                 client.login(username, password)

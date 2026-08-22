@@ -440,18 +440,18 @@ class MainWindow(QMainWindow):
         return layout
 
     def _update_subtitle(self) -> None:
-        vmindex = self.settings.get("mumu_vmindex", 0)
+        vmindex = self.settings.get("mumu_vm_index", 0)
         self.subtitle_label.setText(
             f"实例 {vmindex}  ·  {SCREEN_WIDTH}×{SCREEN_HEIGHT}  ·  {SCREEN_DENSITY} dpi"
         )
 
-    def _effective_screenshot_mode(self) -> str:
+    def _effective_screenshots_enabled(self) -> bool:
         try:
-            max_files = int(self.settings.get("screenshot_max_files", -1))
+            max_files = int(self.settings.get("max_screenshot_files", -1))
         except (TypeError, ValueError):
             max_files = -1
-        # 截图只按"成功与失败（key）"级别保存；screenshot_max_files=0 时完全不保存。
-        return "none" if max_files == 0 else "key"
+        # max_screenshot_files=0 时完全不保存截图。
+        return max_files != 0
 
     def _set_execution_controls(self, state: str) -> None:
         if state in ("running", "stopping"):
@@ -965,12 +965,12 @@ class MainWindow(QMainWindow):
         screenshot_directory = resolve_path(
             self.settings.get("screenshot_directory"), self.base_directory
         )
-        log_max_files = int(self.settings.get("log_max_files", -1))
+        max_log_files = int(self.settings.get("max_log_files", -1))
         log_path: Path | None = None
         if debug_mode:
             log_path = None
             self.log_file = None
-        elif log_max_files != 0:
+        elif max_log_files != 0:
             log_directory.mkdir(parents=True, exist_ok=True)
             log_path = log_directory / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
             self.log_file = log_path.open("w", encoding="utf-8")
@@ -1015,7 +1015,7 @@ class MainWindow(QMainWindow):
                 adb=adb,
                 screenshot_directory=screenshot_directory,
                 poll_interval=poll_interval,
-                screenshot_mode=self._effective_screenshot_mode(),
+                screenshots_enabled=self._effective_screenshots_enabled(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),
@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
                 adb=adb,
                 screenshot_directory=screenshot_directory,
                 poll_interval=poll_interval,
-                screenshot_mode=self._effective_screenshot_mode(),
+                screenshots_enabled=self._effective_screenshots_enabled(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),

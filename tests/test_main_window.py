@@ -229,7 +229,7 @@ class MainWindowTests(unittest.TestCase):
             worker.task_started = FakeSignal()
             worker.task_finished = FakeSignal()
             try:
-                window.settings["log_max_files"] = 0
+                window.settings["max_log_files"] = 0
                 window.run_mode = "single"
                 task = window.tasks[0]
                 with patch.object(window, "_make_adb", return_value=object()), patch(
@@ -791,7 +791,7 @@ class MainWindowTests(unittest.TestCase):
                 self.text = text
 
         class SubtitleTarget:
-            settings = {"mumu_vmindex": 3}
+            settings = {"mumu_vm_index": 3}
 
             def __init__(self) -> None:
                 self.subtitle_label = FakeLabel()
@@ -804,20 +804,20 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._update_subtitle(target)
         self.assertEqual(target.subtitle_label.text, "实例 0  ·  1080×1920  ·  480 dpi")
 
-    def test_effective_screenshot_mode_follows_max_files(self) -> None:
+    def test_effective_screenshots_enabled_follows_max_files(self) -> None:
         class Target:
             settings: dict = {}
 
-        Target.settings = {"screenshot_max_files": 0}
-        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "none")
-        Target.settings = {"screenshot_max_files": -1}
-        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
-        Target.settings = {"screenshot_max_files": 5}
-        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
+        Target.settings = {"max_screenshot_files": 0}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), False)
+        Target.settings = {"max_screenshot_files": -1}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+        Target.settings = {"max_screenshot_files": 5}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
         Target.settings = {"screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
-        Target.settings = {"screenshot_save_level": "invalid"}
-        self.assertEqual(MainWindow._effective_screenshot_mode(Target()), "key")
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+        Target.settings = {}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
 
 
 if __name__ == "__main__":

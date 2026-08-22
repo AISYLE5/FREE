@@ -56,8 +56,8 @@ class WorkerTests(unittest.TestCase):
             settings = {
                 "log_directory": "logs",
                 "screenshot_directory": "screenshots",
-                "log_max_files": -1,
-                "screenshot_max_files": 1,
+                "max_log_files": -1,
+                "max_screenshot_files": 1,
                 "cleanup_mode": "permanent",
             }
 
