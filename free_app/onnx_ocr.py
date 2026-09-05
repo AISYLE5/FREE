@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .helpers import OcrBox
 from .ocr_models import OcrError, model_root
@@ -10,11 +11,11 @@ from .ocr_models import OcrError, model_root
 def _create_session_without_cache(
     self: Any, onnxruntime: Any, model_path: Path, cache_path: Path, providers: Any
 ) -> Any:
-    """Replace onnxocr's session creator with one that never writes disk cache.
+    """替换 onnxocr 的会话创建函数，使其从不写入磁盘缓存。
 
-    Keeps ORT_ENABLE_ALL graph optimization in memory only; the
-    optimized_model_filepath option is intentionally not set, so onnxocr
-    cannot persist or reload cache/onnxruntime/*.optimized.onnx.
+    ``ORT_ENABLE_ALL`` 图优化只保留在内存中；有意不设置
+    ``optimized_model_filepath`` 选项，让 onnxocr 无法持久化或重新加载
+    ``cache/onnxruntime/*.optimized.onnx``。
     """
 
     session_options = onnxruntime.SessionOptions()
@@ -29,31 +30,27 @@ def _create_session_without_cache(
 def _cache_path_without_creation(
     model_dir: str | Path, backend: str, suffix: str
 ) -> Path:
-    """Return onnxocr's cache path shape without creating the directory.
+    """返回与 onnxocr 相同形状的缓存路径，但不创建目录。
 
-    onnxocr's _model_cache_path mkdirs cache/<backend> as a side effect on
-    every engine start, before the session creator is even consulted, so
-    patching only the session creator would still leave an empty directory
-    behind. This replacement keeps the call signature but never touches the
-    filesystem; the returned path is inert because cached files are also
-    never considered valid.
+    onnxocr 的 ``_model_cache_path`` 辅助函数在每次引擎启动时都会顺带创建
+    ``cache/<backend>`` 目录，且这发生在会话创建函数被调用之前，因此只替换
+    会话创建函数仍会留下空目录。本替换函数保持调用签名不变，但完全不触碰
+    文件系统；返回的路径是惰性的，因为缓存文件永远不会被视为有效。
     """
     return Path.cwd() / "cache" / backend / "never-created.optimized.onnx"
 
 
 def _disable_onnxruntime_cache() -> None:
-    """Stop onnxocr from persisting optimized ONNX models under cache/onnxruntime.
+    """阻止 onnxocr 把优化后的 ONNX 模型持久化到 ``cache/onnxruntime``。
 
-    onnxocr's PredictBase builds an ORT graph-optimized copy of each model
-    (cache/onnxruntime/*.optimized.onnx) and reloads it on later starts,
-    and its cache path helper creates the cache directory up front. That
-    on-disk cache is disabled here by patching onnxocr.predict_base:
-    cached files are never considered valid, the cache directory is never
-    created, and sessions are created straight from the source model with
-    in-memory graph optimization only. The trade-off is a one-time graph
-    optimization of a few seconds per engine start.
+    onnxocr 的 ``PredictBase`` 会为每个模型生成一份 ORT 图优化副本
+    (``cache/onnxruntime/*.optimized.onnx``) 并在后续启动时重新加载，
+    且其缓存路径辅助函数会提前创建缓存目录。这里通过给
+    ``onnxocr.predict_base`` 打补丁禁用该磁盘缓存：缓存文件永远不会被视为
+    有效，缓存目录从不创建，会话直接从源模型创建，只做内存中的图优化。
+    代价是每次引擎启动需要一次性花费数秒完成图优化。
 
-    The call is idempotent and a no-op when onnxocr is not installed.
+    本调用是幂等的；未安装 onnxocr 时为空操作。
     """
 
     try:
@@ -65,9 +62,7 @@ def _disable_onnxruntime_cache() -> None:
     current_path = getattr(predict_base, "_model_cache_path", None)
     if current_path is not _cache_path_without_creation:
         predict_base._model_cache_path = _cache_path_without_creation
-    current = getattr(
-        predict_base.PredictBase, "_create_onnxruntime_session", None
-    )
+    current = getattr(predict_base.PredictBase, "_create_onnxruntime_session", None)
     if current is not _create_session_without_cache:
         predict_base.PredictBase._create_onnxruntime_session = (
             _create_session_without_cache
@@ -75,11 +70,10 @@ def _disable_onnxruntime_cache() -> None:
 
 
 class OnnxOcrClient:
-    """Local PP-OCRv5/v6 OCR through the onnxocr ONNX pipeline.
+    """基于 onnxocr ONNX 流水线的本地 PP-OCRv5/v6 OCR。
 
-    Loads the det/rec models selected in the settings from the local model
-    directory and exposes the same recognize(image_bytes) -> list[str]
-    interface used by the automation engine.
+    从本地模型目录加载设置中选择的 ``det``/``rec`` 模型，并暴露与
+    自动化引擎相同的 ``recognize(image_bytes) -> list[str]`` 接口。
     """
 
     def __init__(
@@ -133,11 +127,10 @@ class OnnxOcrClient:
         return [text for text, _points in self.recognize_with_boxes(image)]
 
     def recognize_with_boxes(self, image: bytes) -> list[OcrBox]:
-        """Recognize texts and return each text with its detection quad.
+        """识别文本，并返回每条文本及其检测四边形框。
 
-        Each quad is a list of four (x, y) corner points in screenshot
-        coordinates, so callers can tap the actual text position instead of
-        relying on fixed coordinates.
+        每个四边形框是截图坐标系下四个 ``(x, y)`` 角点组成的列表，
+        调用方因此可以点击文本的实际位置，而不必依赖固定坐标。
         """
         import cv2
         import numpy as np
@@ -162,8 +155,8 @@ class OnnxOcrClient:
                     try:
                         points.append(
                             (
-                                int(round(float(point[0]))),
-                                int(round(float(point[1]))),
+                                round(float(point[0])),
+                                round(float(point[1])),
                             )
                         )
                     except (TypeError, ValueError, IndexError):
@@ -181,7 +174,7 @@ def build_ocr_client(
     base_directory: Path,
     log_callback: Callable[[str], None] | None = None,
 ) -> OnnxOcrClient:
-    """Build the local onnxocr client; missing models fail at recognition time."""
+    """构建本地 onnxocr 客户端；模型缺失要等到识别阶段才报错。"""
 
     client = OnnxOcrClient(
         model_root(settings, base_directory),

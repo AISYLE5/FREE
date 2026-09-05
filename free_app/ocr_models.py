@@ -3,9 +3,10 @@ from __future__ import annotations
 import shutil
 import tarfile
 import urllib.request
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from .config import OCR_DOWNLOAD_SOURCES, resolve_path
 from .trash import TrashError, send_to_recycle_bin
@@ -95,25 +96,26 @@ ProgressCallback = Callable[[int, int], None]
 
 
 def model_root(settings: dict[str, Any], base_directory: Path) -> Path:
-    """Resolve the local directory that holds downloaded OCR models."""
+    """解析存放已下载 OCR 模型的本地目录。"""
 
     return resolve_path(settings.get("ocr_model_directory"), base_directory)
 
 
 def _is_installed(directory: Path, kind: str | None = None) -> bool:
-    """ONNX inference model plus the dict file required by recognizers."""
+    """判断目录是否包含 ``inference.onnx``（``kind`` 为 ``"rec"`` 时还需有 ``dict.txt``）。"""
 
     if not (directory / "inference.onnx").is_file():
         return False
-    if kind == "rec" and not (directory / "dict.txt").is_file():
-        return False
-    return True
+    return not (kind == "rec" and not (directory / "dict.txt").is_file())
 
 
 def installed_models(root: Path) -> dict[str, bool]:
-    """Return which catalog models are already downloaded under root."""
+    """返回模型清单中各模型是否已下载到 ``root``。"""
 
-    return {name: _is_installed(root / name, info.kind) for name, info in PP_OCR_MODELS.items()}
+    return {
+        name: _is_installed(root / name, info.kind)
+        for name, info in PP_OCR_MODELS.items()
+    }
 
 
 def _retry_download(
@@ -121,11 +123,11 @@ def _retry_download(
     step: Callable[[Any], None],
     error_factory: Callable[[Exception | None], Exception],
 ) -> None:
-    """Run ``step`` over ``steps`` until one succeeds.
+    """对 ``steps`` 中的每一项依次执行 ``step``，直到某次成功。
 
-    A cancelled download is always re-raised; any other failure records the
-    last error and moves on. If no step succeeds, ``error_factory`` builds the
-    exception to raise (receiving the last recorded error, or ``None``).
+    下载被取消时总是原样重新抛出；其他失败会记录最后的错误并继续。
+    全部尝试都失败时，由 ``error_factory`` 构造要抛出的异常
+    （入参为最后记录的错误，或 ``None``）。
     """
 
     last_error: Exception | None = None
@@ -176,7 +178,9 @@ def _download_file(
         raise OcrError("OCR 模型下载结果为空")
 
 
-def _download_dict(dict_file: str, target: Path, cancel_event: Any | None = None) -> None:
+def _download_dict(
+    dict_file: str, target: Path, cancel_event: Any | None = None
+) -> None:
     _retry_download(
         DICT_SOURCES,
         lambda source: _download_file(
@@ -187,7 +191,7 @@ def _download_dict(dict_file: str, target: Path, cancel_event: Any | None = None
 
 
 def resolve_download_sources(source: str) -> tuple[str, ...]:
-    """Expand a requested source into the ordered list of sources to try."""
+    """把请求的下载源展开为按序尝试的源列表。"""
 
     if source == AUTO_SOURCE:
         return SOURCE_KEYS
@@ -204,7 +208,7 @@ def _download_model_from_source(
     progress_callback: ProgressCallback | None,
     cancel_event: Any | None,
 ) -> None:
-    """Fetch a model from one mirror source into target."""
+    """从单个镜像源获取模型并存入 ``target``。"""
 
     descriptor = MODEL_SOURCES[source]
     if descriptor["layout"] == "tar":
@@ -245,6 +249,19 @@ def _extract_tar(tar_path: Path, target: Path) -> None:
         tar_path.unlink(missing_ok=True)
 
 
+def _commit_stage(staging: Path, target: Path) -> None:
+    """把 ``staging`` 中的所有条目移动到 ``target``，覆盖已有条目。"""
+    target.mkdir(parents=True, exist_ok=True)
+    for item in staging.iterdir():
+        destination = target / item.name
+        if destination.exists():
+            if destination.is_dir():
+                shutil.rmtree(destination)
+            else:
+                destination.unlink()
+        shutil.move(str(item), str(destination))
+
+
 def download_model(
     name: str,
     root: Path,
@@ -252,10 +269,14 @@ def download_model(
     cancel_event: Any | None = None,
     source: str = AUTO_SOURCE,
 ) -> Path:
-    """Download and extract an inference model into root/name.
+    """下载并解压推理模型到 ``root/name``。
 
-    ``source`` names a single mirror from MODEL_SOURCES, or "auto" to try
-    every source in order until one succeeds.
+    ``source`` 是 ``MODEL_SOURCES`` 中的单个镜像，或 "auto" 表示按顺序
+    尝试所有源直到某个成功。
+
+    ``tar`` 与 ``files`` 两种布局都先在隐藏目录中暂存，待所有文件
+    （包括 rec 模型的 ``dict.txt``）齐备后才提交到 ``root/name``，
+    因此中断的下载绝不会被误认为完整安装。
     """
 
     info = PP_OCR_MODELS.get(name)
@@ -267,13 +288,17 @@ def download_model(
     sources = resolve_download_sources(source)
     root.mkdir(parents=True, exist_ok=True)
     tar_path = root / f"{name}_infer.tar"
+    staging = root / f".{name}_incoming"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
     try:
         _retry_download(
             sources,
             lambda source_key: _download_model_from_source(
                 info,
                 source_key,
-                target,
+                staging,
                 tar_path,
                 progress_callback,
                 cancel_event,
@@ -281,19 +306,24 @@ def download_model(
             lambda error: OcrError(f"OCR 模型下载失败: {name} ({error})"),
         )
         if info.dict_file:
-            _download_dict(info.dict_file, target / "dict.txt", cancel_event)
+            _download_dict(info.dict_file, staging / "dict.txt", cancel_event)
+        _commit_stage(staging, target)
     except Exception:
         tar_path.unlink(missing_ok=True)
         raise
-    if not _is_installed(target):
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    if not _is_installed(target, info.kind):
         raise OcrError(f"OCR 模型 {name} 下载后不完整")
     return target
 
 
 def delete_model(name: str, root: Path, mode: str = "recycle") -> Path:
-    """Remove a downloaded model directory.
+    """删除已下载的模型目录。
 
-    ``mode`` is "recycle" (Windows Recycle Bin, the default) or "permanent".
+    ``mode`` 为 "recycle"（Windows 回收站，默认值）或 "permanent"
+    （永久删除）。
     """
 
     if name not in PP_OCR_MODELS:

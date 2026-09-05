@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import TextIO, cast
 
-from PySide6.QtCore import QPoint, QThread, Qt, QSize, QTimer, QRectF, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QDropEvent, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QDropEvent,
+    QFont,
+    QIcon,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,40 +32,40 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
-    QToolTip,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
+from . import styles as _s
 from .adb import AdbClient
+from .background_task import BackgroundTask
 from .config import (
     TaskFileError,
     ensure_settings_file,
-    load_json,
     load_settings,
     load_task_directory,
     order_tasks,
     resolve_path,
-    save_settings,
+    update_settings,
 )
 from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
-from .logging_utils import format_log_line, should_write_log_line
-from .message_box import QMessageBox
+from .logging_utils import format_log_line
+from .message_box import QMessageBox, confirm
 from .models import BatchRunResult, RunResult, RunStatus, TaskDefinition
-from .mumu import MuMuError, mumu_adb_address_from_settings
+from .mumu import MuMuError, mumu_adb_address_from_settings, resolve_adb_path
 from .settings_dialog import SettingsDialog
 from .task_manager import TaskManagerWidget
 from .task_runner import batch_tasks_to_run, task_execution_count
 from .worker import BatchTaskWorker, TaskWorker
-from . import styles as _s
 
-# Minimum time the "刷新" button stays in its busy state before re-enabling.
+# "刷新"按钮保持忙碌状态的最短时间，之后才重新启用。
 _REFRESH_MIN_DISPLAY_SEC = 0.6
 
 
 def build_app_icon() -> QIcon:
-    """Create a small multi-resolution FREE icon without an external asset."""
+    """程序化绘制小尺寸多分辨率 FREE 图标，不依赖外部资源文件。"""
 
     icon = QIcon()
     for size in (16, 24, 32, 48, 64):
@@ -73,7 +82,9 @@ def build_app_icon() -> QIcon:
             size * 0.18,
         )
         painter.setPen(QColor("#ffffff"))
-        painter.setFont(QFont("Microsoft YaHei", max(8, int(size * 0.54)), QFont.Weight.Bold))
+        painter.setFont(
+            QFont("Microsoft YaHei", max(8, int(size * 0.54)), QFont.Weight.Bold)
+        )
         painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "F")
         painter.end()
         icon.addPixmap(pixmap)
@@ -136,9 +147,16 @@ class MainWindow(QMainWindow):
         self.task_results: dict[str, RunResult] = {}
         self.task_executions_done = 0
         self.log_file: TextIO | None = None
-        self.log_output_level = "all"
         self._refresh_active = False
         self._refresh_started = 0.0
+        self._closing = False
+        self._device_task: BackgroundTask | None = None
+        self._device_finalize_refresh = False
+        # 日志缓冲:高频日志(OCR 候选/进度)只在定时器触发时批量刷新 UI 与磁盘。
+        self._log_pending: list[str] = []
+        self._log_timer = QTimer(self)
+        self._log_timer.setInterval(50)
+        self._log_timer.timeout.connect(self._flush_log_queue)
         self._task_manager_copy_feedback_timer = QTimer(self)
         self._task_manager_copy_feedback_timer.setSingleShot(True)
         self._task_manager_copy_feedback_timer.timeout.connect(
@@ -191,7 +209,7 @@ class MainWindow(QMainWindow):
 
         task_panel = QFrame()
         task_panel.setObjectName("surface")
-        # Match the task-manager page's 280px panel plus its 2px divider.
+        # 与任务管理页的 280px 面板加其 2px 分隔条对齐。
         task_panel.setFixedWidth(282)
         task_layout = QVBoxLayout(task_panel)
         task_layout.setContentsMargins(14, 14, 14, 14)
@@ -201,10 +219,14 @@ class MainWindow(QMainWindow):
         task_heading.setSpacing(8)
         task_title = QLabel("任务顺序")
         task_title.setObjectName("taskSectionTitle")
-        task_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        task_title.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
+        )
         task_hint = QLabel("拖拽排序")
         task_hint.setObjectName("taskSortHint")
-        task_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        task_hint.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
+        )
         self.task_meta_label = QLabel()
         self.task_meta_label.setObjectName("mutedLabel")
         task_heading.addWidget(task_title)
@@ -217,7 +239,9 @@ class MainWindow(QMainWindow):
         self.task_list.setObjectName("taskList")
         self.task_list.setSpacing(7)
         self.task_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.task_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.task_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         self.task_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.task_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.task_list.setDragEnabled(True)
@@ -239,10 +263,14 @@ class MainWindow(QMainWindow):
         self.status_label.setProperty("state", "idle")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setMinimumWidth(78)
-        self.status_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.status_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.run_task_label = QLabel("未选择任务")
         self.run_task_label.setObjectName("runTaskLabel")
-        self.run_task_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.run_task_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         self.current_step_label = QLabel("选择任务后开始")
         self.current_step_label.setObjectName("currentStepLabel")
         self.current_step_label.setWordWrap(True)
@@ -328,7 +356,9 @@ class MainWindow(QMainWindow):
         self.task_manager_pointer_button.setObjectName("taskManagerPointerButton")
         self.task_manager_pointer_button.setCheckable(True)
         self.task_manager_pointer_button.setFixedSize(108, 40)
-        self.task_manager_pointer_button.setToolTip("在 MuMu 模拟器中显示或隐藏鼠标坐标")
+        self.task_manager_pointer_button.setToolTip(
+            "在 MuMu 模拟器中显示或隐藏鼠标坐标"
+        )
         self.task_manager_pointer_button.hide()
         task_manager_header.addWidget(self.task_manager_pointer_button)
         self.task_manager_copy_package_button = QPushButton("获取包名")
@@ -389,8 +419,8 @@ class MainWindow(QMainWindow):
         action_bar = QFrame()
         action_bar.setObjectName("mainActionBar")
         action_bar.setLayout(self._build_action_bar())
-        # Fixed total width so the leading stretch absorbs the "刷新" to
-        # "刷新中…" growth without squeezing the buttons.
+        # 固定总宽度，让头部的前导弹性区吸收"刷新"到
+        # "刷新中…"的宽度增长，避免挤压按钮。
         action_bar.setFixedSize(640, 50)
         layout.addWidget(action_bar)
         return layout
@@ -418,16 +448,16 @@ class MainWindow(QMainWindow):
 
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.setObjectName("secondaryButton")
-        # Minimum (not fixed) width so the button can grow to show "刷新中…"
-        # without clipping its text; the header's leading stretch absorbs it.
+        # 最小（而非固定）宽度，让按钮可以变宽显示"刷新中…"
+        # 而不裁切文字；宽度增长由头部前导弹性区吸收。
         self.refresh_button.setMinimumSize(74, 48)
         self.refresh_button.clicked.connect(self._refresh_all)
 
         self.settings_button = QToolButton()
         self.settings_button.setObjectName("settingsButton")
         self.settings_button.setText("⚙")
-        # The gear is an icon glyph, not interface text; keep its symbol font
-        # so it renders as a compact monochrome icon instead of a fallback glyph.
+        # 齿轮是图标字符而非界面文字；保持其符号字体，
+        # 这样它渲染为紧凑的单色图标，而不是回退字形。
         self.settings_button.setFont(QFont("Segoe UI Symbol", 15))
         self.settings_button.setFixedSize(48, 48)
         self.settings_button.clicked.connect(self._open_settings)
@@ -441,20 +471,14 @@ class MainWindow(QMainWindow):
         return layout
 
     def _update_subtitle(self) -> None:
-        vmindex = self.settings.get("mumu_vmindex", 0)
+        vmindex = self.settings.get("mumu_vm_index", 0)
         self.subtitle_label.setText(
             f"实例 {vmindex}  ·  {SCREEN_WIDTH}×{SCREEN_HEIGHT}  ·  {SCREEN_DENSITY} dpi"
         )
 
-    def _effective_screenshot_level(self) -> str:
-        try:
-            max_files = int(self.settings.get("screenshot_max_files", -1))
-        except (TypeError, ValueError):
-            max_files = -1
-        if max_files == 0:
-            return "none"
-        level = str(self.settings.get("screenshot_save_level", "key"))
-        return level if level in {"key", "all"} else "key"
+    def _effective_screenshots_enabled(self) -> bool:
+        # 清洗层保证 int；max_screenshot_files=0 时完全不保存截图。
+        return self.settings.get("max_screenshot_files", -1) != 0
 
     def _set_execution_controls(self, state: str) -> None:
         if state in ("running", "stopping"):
@@ -465,14 +489,16 @@ class MainWindow(QMainWindow):
                 inactive_enabled,
                 active_state,
                 inactive_state,
-            ) = (
-                {
-                    "running": ("停止", True, "执行", False, "stop", "busy"),
-                    "stopping": ("正在停止…", False, "执行", False, "stopping", "busy"),
-                }[state]
+            ) = {
+                "running": ("停止", True, "执行", False, "stop", "busy"),
+                "stopping": ("正在停止…", False, "执行", False, "stopping", "busy"),
+            }[state]
+            active = (
+                self.run_all_button if self.run_mode == "batch" else self.start_button
             )
-            active = self.run_all_button if self.run_mode == "batch" else self.start_button
-            inactive = self.start_button if self.run_mode == "batch" else self.run_all_button
+            inactive = (
+                self.start_button if self.run_mode == "batch" else self.run_all_button
+            )
             active.setText(active_text)
             active.setEnabled(active_enabled)
             inactive.setText(inactive_text)
@@ -487,11 +513,15 @@ class MainWindow(QMainWindow):
 
         self.run_all_button.setProperty(
             "runState",
-            active_state if self.run_mode == "batch" and state != "idle" else inactive_state,
+            active_state
+            if self.run_mode == "batch" and state != "idle"
+            else inactive_state,
         )
         self.start_button.setProperty(
             "runState",
-            active_state if self.run_mode == "single" and state != "idle" else inactive_state,
+            active_state
+            if self.run_mode == "single" and state != "idle"
+            else inactive_state,
         )
         for button in (self.run_all_button, self.start_button):
             self._refresh_style(button)
@@ -522,11 +552,6 @@ class MainWindow(QMainWindow):
             QLabel#titleLabel {
                 color: #172b2c;
                 font-size: 18px;
-                font-weight: 700;
-            }
-            QLabel#sectionTitle {
-                color: #203637;
-                font-size: 14px;
                 font-weight: 700;
             }
             QLabel#taskSectionTitle {
@@ -685,7 +710,9 @@ class MainWindow(QMainWindow):
                 color: #5c6e6f;
                 border-top: 1px solid #d4e1dc;
             }
-            """ + _s.MESSAGE_BOX_QSS + _s.SCROLLBAR_QSS
+            """
+            + _s.MESSAGE_BOX_QSS
+            + _s.SCROLLBAR_QSS
             + _s.COMMON_CONTROLS_QSS
         )
 
@@ -728,7 +755,9 @@ class MainWindow(QMainWindow):
                 f"{row + 1:02d}  {self._display_task_name(task)}\n"
                 f"{self._STATE_LABELS.get(state, state)}  ·  {len(task.actions)} 个动作"
             )
-            item.setForeground(self._STATE_COLORS.get(state, self._STATE_COLORS["pending"]))
+            item.setForeground(
+                self._STATE_COLORS.get(state, self._STATE_COLORS["pending"])
+            )
             return
 
     def _update_all_task_items(self) -> None:
@@ -759,9 +788,9 @@ class MainWindow(QMainWindow):
             self._set_status("待命", "idle")
 
     def _reload_tasks(self) -> bool:
-        """Rescan the task directory and rebuild task state.
+        """重新扫描任务目录并重建任务状态。
 
-        Returns False when the directory cannot be loaded.
+        目录无法加载时返回 False。
         """
 
         try:
@@ -779,7 +808,9 @@ class MainWindow(QMainWindow):
         self.task_results = {}
         return True
 
-    def _report_config_errors(self, errors: list[TaskFileError], *, popup: bool) -> None:
+    def _report_config_errors(
+        self, errors: list[TaskFileError], *, popup: bool
+    ) -> None:
         if not errors:
             return
         for error in errors:
@@ -796,10 +827,10 @@ class MainWindow(QMainWindow):
             )
 
     def _resync_tasks_and_ui(self, popup: bool) -> bool:
-        """Reload tasks, rebuild the list, and report any config errors.
+        """重载任务、重建列表并报告配置错误。
 
-        Returns False when the task directory cannot be loaded; in that case the
-        task state is left untouched and callers keep their own failure handling.
+        任务目录无法加载时返回 False；此时任务状态保持不变，
+        由调用方自行处理失败。
         """
         if not self._reload_tasks():
             return False
@@ -827,49 +858,19 @@ class MainWindow(QMainWindow):
             return
         task_order = [task.id for task in self._tasks_in_list()]
         try:
-            self._save_main_setting("task_order", task_order)
-            self.settings["task_order"] = task_order
+            self.settings = update_settings(
+                self.settings_path, {"task_order": task_order}
+            )
             self._update_all_task_items()
             self.statusBar().showMessage("任务顺序已自动保存")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "保存失败", f"无法保存任务顺序：{exc}")
 
-    def _save_main_setting(self, key: str, value: object) -> None:
-        persisted = load_json(self.settings_path) if self.settings_path.exists() else {}
-        if not isinstance(persisted, dict):
-            raise ValueError(f"配置文件必须是对象: {self.settings_path}")
-        persisted[key] = value
-        save_settings(self.settings_path, persisted)
-
     def _make_adb(self) -> AdbClient:
-        configured = self.settings.get("adb_path")
-        candidates: list[Path] = []
-        if configured:
-            candidates.append(Path(configured))
-        folder_value = self.settings.get("mumu_directory")
-        if isinstance(folder_value, str) and folder_value.strip():
-            folder = Path(folder_value.strip())
-            candidates.extend(
-                [
-                    folder / "nx_main" / "adb.exe",
-                    folder / "shell" / "adb.exe",
-                    folder / "adb.exe",
-                ]
-            )
-        candidates.extend(
-            [
-                Path(r"D:\APP\MuMu Player 12\nx_main\adb.exe"),
-                Path(r"D:\APP\MuMu Player 12\shell\adb.exe"),
-            ]
-        )
-        executable = next((path for path in candidates if path.exists()), candidates[0])
         return AdbClient(
-            executable=executable,
-            command_timeout=float(self.settings.get("command_timeout_seconds", 15)),
+            executable=resolve_adb_path(self.settings),
+            command_timeout=float(self.settings.get("command_timeout_seconds", 10)),
         )
-
-    def _mumu_forwarded_adb_address(self) -> str | None:
-        return mumu_adb_address_from_settings(self.settings)
 
     @Slot()
     def _refresh_device(self) -> None:
@@ -882,7 +883,9 @@ class MainWindow(QMainWindow):
         self._update_device_status(finalize_refresh=True)
 
     def _finalize_refresh_button(self) -> None:
-        remaining = _REFRESH_MIN_DISPLAY_SEC - (time.monotonic() - self._refresh_started)
+        remaining = _REFRESH_MIN_DISPLAY_SEC - (
+            time.monotonic() - self._refresh_started
+        )
         delay_ms = max(0, int(remaining * 1000))
         QTimer.singleShot(delay_ms, self._restore_refresh_button)
 
@@ -892,60 +895,105 @@ class MainWindow(QMainWindow):
         self.refresh_button.setEnabled(True)
 
     def _update_device_status(self, finalize_refresh: bool = False) -> None:
+        if self._device_task is not None and self._device_task.isRunning():
+            return
+        self._device_finalize_refresh = finalize_refresh
         self.device_label.setText("设备：检查中…")
         self.device_label.setProperty("state", "checking")
         self._refresh_style(self.device_label)
+        task = BackgroundTask(self._probe_device_status)
+        task.succeeded.connect(self._apply_device_status)
+        task.failed.connect(self._apply_device_status_failure)
+        # 先清引用再 deleteLater：残留引用会让后续 isRunning() 访问已销毁的 C++ 对象。
+        task.finished.connect(self._on_device_task_finished)
+        task.finished.connect(task.deleteLater)
+        self._device_task = task
+        task.start()
+
+    @Slot()
+    def _on_device_task_finished(self) -> None:
+        self._device_task = None
+
+    def _probe_device_status(self) -> tuple[str, str, str]:
+        """在 GUI 线程之外执行：连接 MuMu 并探测设备状态。
+
+        返回 ``(state, label_text, status_message)``；探测出现致命错误时
+        抛出异常，由调用方呈现失败状态。
+        """
+
+        adb = self._make_adb()
+        forwarded_address = None
         try:
-            adb = self._make_adb()
+            forwarded_address = mumu_adb_address_from_settings(self.settings)
+        except (MuMuError, OSError, ValueError, TypeError):
             forwarded_address = None
+        if forwarded_address:
             try:
-                forwarded_address = self._mumu_forwarded_adb_address()
-            except (MuMuError, OSError, ValueError, TypeError):
-                forwarded_address = None
-            if forwarded_address:
-                try:
-                    adb.connect(forwarded_address)
-                except Exception:
-                    pass
-            if not forwarded_address:
-                raise MuMuError("MuMu 未返回动态 ADB 地址")
-            devices = adb.list_devices()
-            selected = next(
-                (device for device in devices if device.serial == forwarded_address),
-                None,
+                adb.connect(forwarded_address)
+            except Exception:  # noqa: S110
+                # 连接失败不致命：随后的设备列表探测会呈现真实状态。
+                pass
+        if not forwarded_address:
+            raise MuMuError("MuMu 未返回动态 ADB 地址")
+        devices = adb.list_devices()
+        selected = next(
+            (device for device in devices if device.serial == forwarded_address),
+            None,
+        )
+        if selected and selected.state == "device":
+            return "ready", f"MuMu · {selected.serial} · 可用", "MuMu ADB 设备可用"
+        if selected:
+            return (
+                "error",
+                f"MuMu · {selected.serial} · {selected.state}",
+                "MuMu 设备当前不可用",
             )
-            if selected and selected.state == "device":
-                self.device_label.setText(f"MuMu · {selected.serial} · 可用")
-                self.device_label.setProperty("state", "ready")
-                self.statusBar().showMessage("MuMu ADB 设备可用")
-            elif selected:
-                self.device_label.setText(f"MuMu · {selected.serial} · {selected.state}")
-                self.device_label.setProperty("state", "error")
-                self.statusBar().showMessage("MuMu 设备当前不可用")
-            else:
-                self.device_label.setText("MuMu · 未找到设备")
-                self.device_label.setProperty("state", "error")
-                self.statusBar().showMessage("未找到可用 MuMu ADB 设备")
-        except Exception as exc:
-            self.device_label.setText("MuMu · ADB 不可用")
-            self.device_label.setProperty("state", "error")
-            self.statusBar().showMessage(str(exc))
-        finally:
-            self._refresh_style(self.device_label)
-            if finalize_refresh:
-                self._finalize_refresh_button()
+        return "error", "MuMu · 未找到设备", "未找到可用 MuMu ADB 设备"
+
+    @Slot(object)
+    def _apply_device_status(self, result: object) -> None:
+        state, text, message = cast(tuple[str, str, str], result)
+        self._set_device_status(state, text, message)
+
+    @Slot(str)
+    def _apply_device_status_failure(self, message: str) -> None:
+        self._set_device_status("error", "MuMu · ADB 不可用", message)
+
+    def _set_device_status(
+        self, state: str, text: str, message: str | None = None
+    ) -> None:
+        self.device_label.setText(text)
+        self.device_label.setProperty("state", state)
+        if message:
+            self.statusBar().showMessage(message)
+        self._refresh_style(self.device_label)
+        if self._device_finalize_refresh:
+            self._finalize_refresh_button()
 
     @Slot(str)
     def _append_log(self, message: str) -> None:
-        line = format_log_line(message)
-        output_level = self.log_output_level
-        if should_write_log_line(output_level, line):
+        self._log_pending.append(format_log_line(message))
+        # 定时批量刷新:任务运行期每个 ADB 命令会产生多行日志,
+        # 逐行 appendPlainText+滚动+flush 会让 UI 线程每行做三件 IO 级工作。
+        if not self._log_timer.isActive():
+            self._log_timer.start()
+
+    def _flush_log_queue(self) -> None:
+        pending = self._log_pending
+        if not pending:
+            return
+        self._log_pending = []
+        scroll_bar = self.log_view.verticalScrollBar()
+        # 只有本来就接近底部时才跟随滚动,避免用户上翻查看时被拉走。
+        follow_bottom = scroll_bar.value() >= scroll_bar.maximum() - 8
+        for line in pending:
             self.log_view.appendPlainText(line)
-            scroll_bar = self.log_view.verticalScrollBar()
+        joined = "\n".join(pending)
+        if self.log_file:
+            self.log_file.write(joined + "\n")
+            self.log_file.flush()
+        if follow_bottom:
             scroll_bar.setValue(scroll_bar.maximum())
-            if self.log_file:
-                self.log_file.write(line + "\n")
-                self.log_file.flush()
 
     def _prepare_run(
         self,
@@ -966,17 +1014,18 @@ class MainWindow(QMainWindow):
 
         debug_mode = self.run_mode == "debug"
         append_log = log_receiver or self._append_log
-        self.log_output_level = str(self.settings.get("log_output_level", "all"))
-        log_directory = resolve_path(self.settings.get("log_directory"), self.base_directory)
+        log_directory = resolve_path(
+            self.settings.get("log_directory"), self.base_directory
+        )
         screenshot_directory = resolve_path(
             self.settings.get("screenshot_directory"), self.base_directory
         )
-        log_max_files = int(self.settings.get("log_max_files", -1))
+        max_log_files = self.settings.get("max_log_files", -1)
         log_path: Path | None = None
         if debug_mode:
             log_path = None
             self.log_file = None
-        elif log_max_files != 0:
+        elif max_log_files != 0:
             log_directory.mkdir(parents=True, exist_ok=True)
             log_path = log_directory / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
             self.log_file = log_path.open("w", encoding="utf-8")
@@ -999,21 +1048,17 @@ class MainWindow(QMainWindow):
         )
         if log_path is not None:
             append_log(f"日志文件: {log_path}")
-        poll_interval = float(self.settings.get("poll_interval_seconds", 0.5))
         if debug_mode:
             append_log("调试模式：直接连接已运行实例，不启动 MuMu、不清理 App")
         else:
             append_log(
                 "运行配置: "
-                f"log_output_level={self.log_output_level}, "
-                f"poll_interval={poll_interval:g}s, "
-                f"screenshot_save_level={self._effective_screenshot_level()}, "
-                f"auto_start_mumu={bool(self.settings.get('auto_start_mumu', False))}, "
-                f"close_mumu_after_run={bool(self.settings.get('close_mumu_after_run', False))}, "
+                f"auto_start_mumu={self.settings.get('auto_start_mumu', True)}, "
+                f"close_mumu_after_run={self.settings.get('close_mumu_after_run', False)}, "
                 f"close_mumu_app_after_run="
-                f"{bool(self.settings.get('close_mumu_app_after_run', False))}, "
+                f"{self.settings.get('close_mumu_app_after_run', False)}, "
                 f"task_execution_counts={self.settings.get('task_execution_counts', {})}, "
-                f"cleanup_after_task={bool(self.settings.get('cleanup_after_task', True))}"
+                f"cleanup_after_task={self.settings.get('cleanup_after_task', True)}"
             )
 
         self.worker_thread = QThread(self)
@@ -1022,8 +1067,7 @@ class MainWindow(QMainWindow):
                 tasks,
                 adb=adb,
                 screenshot_directory=screenshot_directory,
-                poll_interval=poll_interval,
-                screenshot_save_level=self._effective_screenshot_level(),
+                screenshots_enabled=self._effective_screenshots_enabled(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),
@@ -1038,8 +1082,7 @@ class MainWindow(QMainWindow):
                 tasks[0],
                 adb=adb,
                 screenshot_directory=screenshot_directory,
-                poll_interval=poll_interval,
-                screenshot_save_level=self._effective_screenshot_level(),
+                screenshots_enabled=self._effective_screenshots_enabled(),
                 settings=self.settings,
                 base_directory=self.base_directory,
                 config_errors=tuple(self.config_errors),
@@ -1094,11 +1137,14 @@ class MainWindow(QMainWindow):
             return
         tasks = batch_tasks_to_run(all_tasks, self.settings)
         skipped_tasks = [
-            task for task in all_tasks
-            if task_execution_count(self.settings, task_id=task.id) == 0
+            task
+            for task in all_tasks
+            if task_execution_count(self.settings, task.id) == 0
         ]
         if not tasks:
-            QMessageBox.warning(self, "没有任务", "全部任务的执行次数均为 0，没有可执行任务。")
+            QMessageBox.warning(
+                self, "没有任务", "全部任务的执行次数均为 0，没有可执行任务。"
+            )
             return
         self.run_mode = "batch"
         if self._prepare_run(tasks):
@@ -1138,10 +1184,14 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, max(1, len(task.actions)))
         self.progress_bar.setValue(0)
         self.step_count_label.setText(f"当前动作 0 / {len(task.actions)}")
-        self.current_step_label.setText(f"准备执行第 {index} 个任务 · {self._display_task_name(task)}")
+        self.current_step_label.setText(
+            f"准备执行第 {index} 个任务 · {self._display_task_name(task)}"
+        )
 
     @Slot(str, int, int, str)
-    def _batch_progress(self, task_id: str, index: int, total: int, description: str) -> None:
+    def _batch_progress(
+        self, task_id: str, index: int, total: int, description: str
+    ) -> None:
         self._single_progress(index, total, description)
         self.run_task_label.setText(self._display_task_name(self.task_by_id[task_id]))
 
@@ -1163,19 +1213,31 @@ class MainWindow(QMainWindow):
         self._update_task_item(result.task_id)
         self.overall_progress.setValue(1)
         self.overall_count_label.setText("全部任务 1 / 1")
-        self.progress_bar.setValue(min(result.completed_steps, max(1, result.total_steps)))
-        self.step_count_label.setText(f"当前动作 {result.completed_steps} / {result.total_steps}")
+        self.progress_bar.setValue(
+            min(result.completed_steps, max(1, result.total_steps))
+        )
+        self.step_count_label.setText(
+            f"当前动作 {result.completed_steps} / {result.total_steps}"
+        )
         self._show_run_status(result.status, result.error, result.failed_step)
 
     @Slot(object)
     def _batch_finished(self, result: BatchRunResult) -> None:
-        self.overall_progress.setValue(min(result.completed_tasks, max(1, result.total_tasks)))
-        self.overall_count_label.setText(f"全部任务 {result.completed_tasks} / {result.total_tasks}")
+        self.overall_progress.setValue(
+            min(result.completed_tasks, max(1, result.total_tasks))
+        )
+        self.overall_count_label.setText(
+            f"全部任务 {result.completed_tasks} / {result.total_tasks}"
+        )
+        # 没有结果的任务（批量准备失败/中止时未轮到执行）统一标记为跳过，
+        # 避免 UI 残留“待执行”。
         for task in self.active_tasks:
-            if task.id not in self.task_results and result.status == RunStatus.STOPPED:
+            if task.id not in self.task_results:
                 self.task_states[task.id] = "skipped"
                 self._update_task_item(task.id)
-        detail = f"失败任务：{result.failed_task}" if result.failed_task else result.error
+        detail = (
+            f"失败任务：{result.failed_task}" if result.failed_task else result.error
+        )
         self._show_run_status(result.status, detail, result.failed_task)
 
     def _show_run_status(
@@ -1205,6 +1267,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _thread_finished(self) -> None:
+        self._flush_log_queue()
         if self.log_file:
             self.log_file.close()
             self.log_file = None
@@ -1217,6 +1280,9 @@ class MainWindow(QMainWindow):
         self._set_execution_controls("idle")
         self.refresh_button.setEnabled(True)
         self._update_device_status()
+        if self._closing:
+            # 窗口关闭等待任务停止时,由这里接力完成真正的退出流程。
+            self.close()
 
     def _set_status(self, text: str, state: str) -> None:
         self.status_label.setText(text)
@@ -1232,6 +1298,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _open_settings(self) -> None:
         if self.worker_thread:
+            self.statusBar().showMessage("任务运行中，请先停止任务。")
             return
         if self._settings_widget is None:
             dialog = SettingsDialog(
@@ -1249,7 +1316,7 @@ class MainWindow(QMainWindow):
             )
             dialog.accepted.connect(self._on_settings_saved)
             dialog.rejected.connect(self._on_settings_back)
-        self._settings_widget.rescan_model_status()
+        self._settings_widget.refresh_values()
         self.pages.setCurrentWidget(self.settings_page)
         self._settings_widget.show()
 
@@ -1266,12 +1333,19 @@ class MainWindow(QMainWindow):
             widget.feedback_requested.connect(self._show_task_manager_feedback)
             widget.run_action_requested.connect(self._run_single_action_from_manager)
             widget.run_stop_requested.connect(self._stop_task)
+            widget.pointer_location_failed.connect(self._revert_pointer_toggle)
             self.task_manager_pointer_button.toggled.connect(
                 self._on_task_manager_pointer_toggled
             )
-            self.task_manager_copy_package_button.clicked.connect(widget._on_copy_package_clicked)
-            self.task_manager_dump_tree_button.clicked.connect(widget._on_dump_tree_clicked)
-            self.task_manager_view_json_button.clicked.connect(widget._on_view_json_clicked)
+            self.task_manager_copy_package_button.clicked.connect(
+                widget._on_copy_package_clicked
+            )
+            self.task_manager_dump_tree_button.clicked.connect(
+                widget._on_dump_tree_clicked
+            )
+            self.task_manager_view_json_button.clicked.connect(
+                widget._on_view_json_clicked
+            )
         self._task_manager_widget.reload()
         self.pages.setCurrentWidget(self.task_manager_page)
         self._task_manager_widget.show()
@@ -1282,11 +1356,16 @@ class MainWindow(QMainWindow):
 
     def _on_task_manager_pointer_toggled(self, enabled: bool) -> None:
         widget = self._task_manager_widget
-        if widget is None or widget.set_pointer_location(enabled):
+        if widget is None:
             return
+        widget.set_pointer_location(enabled)
+
+    def _revert_pointer_toggle(self, enabled: bool) -> None:
+        """后台切换坐标显示失败时回退按钮状态。"""
         self.task_manager_pointer_button.blockSignals(True)
         self.task_manager_pointer_button.setChecked(not enabled)
         self.task_manager_pointer_button.blockSignals(False)
+        self.statusBar().showMessage("指针坐标设置失败，请检查 ADB 连接。")
 
     def _close_task_manager_page(self) -> None:
         self.pages.setCurrentWidget(self.main_page)
@@ -1302,7 +1381,10 @@ class MainWindow(QMainWindow):
         QToolTip.hideText()
 
     def _task_manager_back(self) -> None:
-        if self._task_manager_widget is not None and self._task_manager_widget.go_back():
+        if (
+            self._task_manager_widget is not None
+            and self._task_manager_widget.go_back()
+        ):
             return
         self._close_task_manager_page()
 
@@ -1320,11 +1402,12 @@ class MainWindow(QMainWindow):
         package: str,
         task_name: str,
     ) -> None:
-        """Run a single action emitted from the task manager."""
+        """把任务管理页发来的动作作为一次性调试任务运行。"""
         if self.worker_thread:
             QMessageBox.warning(self, "任务运行中", "请先停止当前运行的任务。")
             return
         from .models import Action
+
         try:
             parsed_actions = tuple(Action.from_dict(action) for action in actions)
         except Exception as exc:
@@ -1371,33 +1454,45 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentWidget(self.main_page)
 
     def _confirm_exit_with_unsaved_manager_changes(self) -> bool:
-        """Ask before closing while the task manager still has unsaved edits."""
         manager = self._task_manager_widget
         if manager is None or not manager.has_unsaved_changes():
             return True
-        message_box = QMessageBox(self)
-        message_box.setWindowTitle("未保存的修改")
-        message_box.setText("任务管理器中有未保存的修改，确定退出吗？")
-        cancel_button = message_box.addButton("取消", QMessageBox.ButtonRole.AcceptRole)
-        confirm_button = message_box.addButton("确认", QMessageBox.ButtonRole.DestructiveRole)
-        cancel_button.setObjectName("messageBoxAction")
-        confirm_button.setObjectName("messageBoxAction")
-        confirm_button.setDefault(True)
-        message_box.setEscapeButton(cancel_button)
-        message_box.setStyleSheet(_s.MESSAGE_BOX_QSS)
-        message_box.exec()
-        return message_box.clickedButton() == confirm_button
+        return confirm(self, "未保存的修改", "任务管理器中有未保存的修改，确定退出吗？")
+
+    def _confirm_exit_with_unsaved_settings_changes(self) -> bool:
+        settings_widget = self._settings_widget
+        if settings_widget is None or not settings_widget.has_unsaved_changes():
+            return True
+        return confirm(self, "未保存的修改", "设置中有未保存的修改，确定退出吗？")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.worker_thread:
-            self._stop_task()
-            self.worker_thread.quit()
-            self.worker_thread.wait(3000)
         if not self._confirm_exit_with_unsaved_manager_changes():
             event.ignore()
             return
+        if not self._confirm_exit_with_unsaved_settings_changes():
+            event.ignore()
+            return
+        if self.worker_thread:
+            # 不再 while-wait 忙等(它不处理事件,statusBar 提示永远画不出来,
+            # 且 worker 卡在 10s 超时 ADB 命令时窗口白屏)。
+            # 改为:请求停止 → 忽略本次关闭事件 → _thread_finished 在工作线程
+            # 退出后调用 self.close() 走完整收尾。
+            self._stop_task()
+            self._closing = True
+            self.statusBar().showMessage("正在停止任务并关闭…")
+            event.ignore()
+            return
+        if self._settings_widget is not None:
+            self._settings_widget.shutdown_downloads()
+        if self._task_manager_widget is not None:
+            self._task_manager_widget.shutdown()
+        if self._device_task is not None and self._device_task.isRunning():
+            # ADB 探测自带超时，这里给足余量避免销毁运行中的 QThread。
+            self._device_task.wait(30000)
+        self._flush_log_queue()
         if self.log_file:
             self.log_file.close()
+            self.log_file = None
         event.accept()
 
 

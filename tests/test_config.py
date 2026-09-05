@@ -7,7 +7,6 @@ from pathlib import Path
 
 from free_app.action_schema import validate_action_params
 from free_app.config import (
-    _coerce_scalars,
     _expand_action,
     _native_number,
     _substitute,
@@ -37,8 +36,7 @@ class ConfigTests(unittest.TestCase):
             if target in value:
                 return True
             return any(
-                ConfigTests._contains_key(item, target)
-                for item in value.values()
+                ConfigTests._contains_key(item, target) for item in value.values()
             )
         if isinstance(value, list):
             return any(ConfigTests._contains_key(item, target) for item in value)
@@ -55,14 +53,14 @@ class ConfigTests(unittest.TestCase):
             base = Path(directory)
             template = base / "settings.example.json"
             settings_path = base / "settings.json"
-            template.write_text(json.dumps({"mumu_vmindex": 4}), encoding="utf-8")
+            template.write_text(json.dumps({"mumu_vm_index": 4}), encoding="utf-8")
 
             self.assertTrue(ensure_settings_file(settings_path))
-            self.assertEqual(load_settings(settings_path)["mumu_vmindex"], 4)
+            self.assertEqual(load_settings(settings_path)["mumu_vm_index"], 4)
 
-            settings_path.write_text(json.dumps({"mumu_vmindex": 7}), encoding="utf-8")
+            settings_path.write_text(json.dumps({"mumu_vm_index": 7}), encoding="utf-8")
             self.assertFalse(ensure_settings_file(settings_path))
-            self.assertEqual(load_settings(settings_path)["mumu_vmindex"], 7)
+            self.assertEqual(load_settings(settings_path)["mumu_vm_index"], 7)
 
     def test_shipped_config_has_no_smtp_credentials(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -119,14 +117,18 @@ class ConfigTests(unittest.TestCase):
         for expected in ("detect", "click", "if", "wait", "back", "capture_screenshot"):
             self.assertIn(expected, exp_types)
         raw_pts = (
-            Path(__file__).resolve().parents[1] / "config" / "tasks" / "bilibili_pts.json"
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "tasks"
+            / "bilibili_pts.json"
         ).read_text(encoding="utf-8")
-        self.assertIn("loop_until", raw_pts)
+        self.assertIn("swipe_until", raw_pts)
+        self.assertNotIn("loop_until", raw_pts)
         share = task_by_id["bilibili_share"]
         video_click = next(
             action
             for action in share.actions
-            if action.type == "click" and action.parameters.get("text") == "视频,%"
+            if action.type == "click" and action.parameters.get("texts") == ["视频,%"]
         )
         self.assertEqual(video_click.parameters["match_mode"], "fuzzy")
         share_click = next(
@@ -153,7 +155,8 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                action.type == "detect" and action.parameters.get("locate") == "ocr"
+                action.type in {"detect", "swipe_until"}
+                and action.parameters.get("locate") == "ocr"
                 for action in task_by_id["bilibili_pts"].actions
             )
         )
@@ -165,24 +168,24 @@ class ConfigTests(unittest.TestCase):
         )
         task = next(task for task in tasks if task.id == "hanserclub")
 
-        launch_action = next(action for action in task.actions if action.type == "launch")
+        launch_action = next(
+            action for action in task.actions if action.type == "launch"
+        )
         self.assertEqual(launch_action.parameters["wait_seconds"], 10)
         more_click = next(
             action
             for action in task.actions
-            if action.type == "click" and action.parameters.get("text") == "更多"
+            if action.type == "click" and action.parameters.get("texts") == ["更多"]
         )
-        self.assertEqual(more_click.parameters["text"], "更多")
+        self.assertEqual(more_click.parameters["texts"], ["更多"])
         sign_click = next(
             action
             for action in task.actions
-            if action.type == "click" and action.parameters.get("text") == "签到"
+            if action.type == "click" and action.parameters.get("texts") == ["签到"]
         )
         self.assertEqual(sign_click.parameters["skip_if_texts"], ["已签到"])
         capture_action = next(
-            action
-            for action in task.actions
-            if action.type == "capture_screenshot"
+            action for action in task.actions if action.type == "capture_screenshot"
         )
         self.assertNotIn("label", capture_action.parameters)
         self.assertFalse(any(action.type == "detect" for action in task.actions))
@@ -231,7 +234,14 @@ class ConfigTests(unittest.TestCase):
                     "id": "demo",
                     "name": "Demo",
                     "package": "demo.package",
-                    "actions": [{"type": "click", "locate": "ui", "target": "text", "text": "${target}"}],
+                    "actions": [
+                        {
+                            "type": "click",
+                            "locate": "ui",
+                            "target": "text",
+                            "texts": ["${target}"],
+                        }
+                    ],
                 },
             )
             tasks, errors = load_task_directory(
@@ -239,9 +249,11 @@ class ConfigTests(unittest.TestCase):
                 {"target": "固定群"},
             )
         self.assertEqual(errors, [])
-        self.assertEqual(tasks[0].actions[0].parameters["text"], "固定群")
+        self.assertEqual(tasks[0].actions[0].parameters["texts"], ["固定群"])
 
-    def test_single_settings_file_keeps_smtp_credentials_and_removes_unknown_field(self) -> None:
+    def test_single_settings_file_keeps_smtp_credentials_and_removes_unknown_field(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             settings_path = base / "settings.json"
@@ -266,8 +278,12 @@ class ConfigTests(unittest.TestCase):
             settings = load_settings(settings_path)
 
         self.assertTrue(settings["email_notification"]["enabled"])
-        self.assertEqual(settings["email_notification"]["smtp_username"], "sender@qq.com")
-        self.assertEqual(settings["email_notification"]["smtp_password"], "authorization-code")
+        self.assertEqual(
+            settings["email_notification"]["smtp_username"], "sender@qq.com"
+        )
+        self.assertEqual(
+            settings["email_notification"]["smtp_password"], "authorization-code"
+        )
         self.assertEqual(settings["email_notification"]["smtp_host"], "smtp.qq.com")
         self.assertNotIn("stale_field", settings)
 
@@ -299,10 +315,10 @@ class ConfigTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "mumu_vmindex": "bad",
+                        "mumu_vm_index": "bad",
                         "cleanup_delay_seconds": "bad",
-                        "log_max_files": "bad",
-                        "screenshot_max_files": "bad",
+                        "max_log_files": "bad",
+                        "max_screenshot_files": "bad",
                         "task_execution_counts": {
                             "demo": "bad",
                             "": 4,
@@ -317,10 +333,10 @@ class ConfigTests(unittest.TestCase):
             )
             settings = load_settings(path)
 
-        self.assertEqual(settings["mumu_vmindex"], 0)
-        self.assertEqual(settings["cleanup_delay_seconds"], 3)
-        self.assertEqual(settings["log_max_files"], -1)
-        self.assertEqual(settings["screenshot_max_files"], -1)
+        self.assertEqual(settings["mumu_vm_index"], 0)
+        self.assertEqual(settings["cleanup_delay_seconds"], 5)
+        self.assertEqual(settings["max_log_files"], -1)
+        self.assertEqual(settings["max_screenshot_files"], -1)
         self.assertEqual(settings["task_execution_counts"]["valid"], 10)
         self.assertNotIn("demo", settings["task_execution_counts"])
         self.assertEqual(settings["task_execution_counts"]["3"], 2)
@@ -328,7 +344,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["cleanup_mode"], "recycle")
         self.assertIsInstance(settings["email_notification"], dict)
 
-    def test_screenshot_and_log_levels_are_normalized_from_config(self) -> None:
+    def test_output_settings_levels_are_dropped_and_retention_kept(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
@@ -338,15 +354,15 @@ class ConfigTests(unittest.TestCase):
                     {
                         "screenshot_save_level": "all",
                         "log_output_level": "all",
-                        "log_max_files": 5,
+                        "max_log_files": 5,
                     }
                 ),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_save_level"], "all")
-        self.assertEqual(settings["log_output_level"], "all")
-        self.assertEqual(settings["log_max_files"], 5)
+        self.assertEqual(settings["max_log_files"], 5)
+        self.assertNotIn("screenshot_save_level", settings)
+        self.assertNotIn("log_output_level", settings)
 
     def test_unknown_log_fields_are_removed(self) -> None:
         for stale_value in ("summary", "none"):
@@ -354,26 +370,28 @@ class ConfigTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "settings.json"
                     path.write_text(
-                        json.dumps({"stale_log_field": stale_value}, ensure_ascii=False),
+                        json.dumps(
+                            {"stale_log_field": stale_value}, ensure_ascii=False
+                        ),
                         encoding="utf-8",
                     )
                     settings = load_settings(path)
 
-                self.assertEqual(settings["log_output_level"], "all")
-                self.assertEqual(settings["log_max_files"], -1)
+                self.assertEqual(settings["max_log_files"], -1)
+                self.assertNotIn("log_output_level", settings)
                 self.assertNotIn("stale_log_field", settings)
 
-    def test_log_max_files_is_authoritative(self) -> None:
+    def test_max_log_files_is_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             path.write_text(
-                json.dumps({"stale_log_field": "none", "log_max_files": 5}),
+                json.dumps({"stale_log_field": "none", "max_log_files": 5}),
                 encoding="utf-8",
             )
             settings = load_settings(path)
 
-        self.assertEqual(settings["log_max_files"], 5)
-        self.assertEqual(settings["log_output_level"], "all")
+        self.assertEqual(settings["max_log_files"], 5)
+        self.assertNotIn("log_output_level", settings)
 
     def test_unknown_log_enabled_is_removed(self) -> None:
         for value in (False, True, "false"):
@@ -386,7 +404,7 @@ class ConfigTests(unittest.TestCase):
                     )
                     settings = load_settings(path)
 
-                self.assertEqual(settings["log_max_files"], -1)
+                self.assertEqual(settings["max_log_files"], -1)
                 self.assertNotIn("stale_enabled", settings)
 
     def test_unknown_smtp_fields_are_removed(self) -> None:
@@ -399,7 +417,7 @@ class ConfigTests(unittest.TestCase):
                             {
                                 "email_notification": {
                                     "stale_field": "first@example.com; second@example.com",
-                                    "security": unsupported_security,
+                                    "smtp_security": unsupported_security,
                                 }
                             }
                         ),
@@ -409,7 +427,7 @@ class ConfigTests(unittest.TestCase):
 
                 email = settings["email_notification"]
                 self.assertEqual(email["recipients"], [])
-                self.assertEqual(email["security"], "ssl")
+                self.assertEqual(email["smtp_security"], "ssl")
                 self.assertNotIn("stale_field", email)
 
     def test_unknown_screenshot_flag_is_removed(self) -> None:
@@ -427,20 +445,25 @@ class ConfigTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     settings = load_settings(settings_path)
-                self.assertEqual(settings["screenshot_save_level"], "key")
+                self.assertNotIn("screenshot_save_level", settings)
                 self.assertNotIn("stale_screenshot_flag", settings)
 
-    def test_screenshot_level_rejects_invalid_values(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config_directory = Path(directory) / "config"
-            config_directory.mkdir()
-            settings_path = config_directory / "settings.json"
-            settings_path.write_text(
-                json.dumps({"screenshot_save_level": "everything"}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+    def test_screenshot_level_is_dropped_from_config(self) -> None:
+        for stale_level in ("all", "key", "everything"):
+            with self.subTest(stale_level=stale_level):
+                with tempfile.TemporaryDirectory() as directory:
+                    config_directory = Path(directory) / "config"
+                    config_directory.mkdir()
+                    settings_path = config_directory / "settings.json"
+                    settings_path.write_text(
+                        json.dumps(
+                            {"screenshot_save_level": stale_level}, ensure_ascii=False
+                        ),
+                        encoding="utf-8",
+                    )
+                    settings = load_settings(settings_path)
+                self.assertNotIn("screenshot_save_level", settings)
+                self.assertEqual(settings["max_screenshot_files"], -1)
 
     def test_mumu_directory_is_derived_from_adb_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -465,19 +488,19 @@ class ConfigTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                     }
                 ),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["log_max_files"], 5)
-        self.assertEqual(settings["screenshot_max_files"], 5)
+        self.assertEqual(settings["max_log_files"], 5)
+        self.assertEqual(settings["max_screenshot_files"], 5)
         self.assertEqual(settings["cleanup_mode"], "recycle")
 
-    def test_screenshot_max_files_semantics_and_forced_level(self) -> None:
+    def test_max_screenshot_files_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
@@ -485,7 +508,7 @@ class ConfigTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "screenshot_max_files": -5,
+                        "max_screenshot_files": -5,
                         "screenshot_save_level": "none",
                     },
                     ensure_ascii=False,
@@ -493,20 +516,20 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_max_files"], -1)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+        self.assertEqual(settings["max_screenshot_files"], -1)
+        self.assertNotIn("screenshot_save_level", settings)
 
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "config"
             config_directory.mkdir()
             settings_path = config_directory / "settings.json"
             settings_path.write_text(
-                json.dumps({"screenshot_max_files": 0}, ensure_ascii=False),
+                json.dumps({"max_screenshot_files": 0}, ensure_ascii=False),
                 encoding="utf-8",
             )
             settings = load_settings(settings_path)
-        self.assertEqual(settings["screenshot_max_files"], 0)
-        self.assertEqual(settings["screenshot_save_level"], "key")
+        self.assertEqual(settings["max_screenshot_files"], 0)
+        self.assertNotIn("screenshot_save_level", settings)
 
     def test_missing_settings_is_rejected_without_bundled_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -551,7 +574,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["log_directory"], "logs")
         self.assertEqual(settings["screenshot_directory"], "screenshots")
         self.assertTrue(settings["cleanup_after_task"])
-        self.assertEqual(settings["cleanup_delay_seconds"], 3)
+        self.assertEqual(settings["cleanup_delay_seconds"], 5)
 
     def test_missing_tasks_file_is_rejected_without_bundled_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -561,24 +584,38 @@ class ConfigTests(unittest.TestCase):
     def test_project_tasks_are_loaded_from_project_config(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         variables = {"qq_group_name": "test-group"}
-        configured, config_errors = load_task_directory(project_root / "config" / "tasks", variables)
+        configured, config_errors = load_task_directory(
+            project_root / "config" / "tasks", variables
+        )
         self.assertEqual(config_errors, [])
         self.assertEqual(
             {task.id for task in configured},
-            {"hanserclub", "xiaoheihe", "bilibili_exp", "bilibili_pts", "bilibili_share"},
+            {
+                "hanserclub",
+                "xiaoheihe",
+                "bilibili_exp",
+                "bilibili_pts",
+                "bilibili_share",
+            },
         )
         self.assertEqual(configured[0].actions[0].type, "stop")
 
     def test_bilibili_exp_uses_compound_ocr_claim_or_watch(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         raw = json.loads(
-            (project_root / "config" / "tasks" / "bilibili_exp.json").read_text(encoding="utf-8")
+            (project_root / "config" / "tasks" / "bilibili_exp.json").read_text(
+                encoding="utf-8"
+            )
         )
         compound = next(
-            action for action in raw["actions"] if action.get("name") == "ocr_claim_or_watch"
+            action
+            for action in raw["actions"]
+            if action.get("name") == "ocr_claim_or_watch"
         )
         self.assertEqual(compound["type"], "compound")
-        self.assertTrue((project_root / "config" / "actions" / "ocr_claim_or_watch.json").exists())
+        self.assertTrue(
+            (project_root / "config" / "actions" / "ocr_claim_or_watch.json").exists()
+        )
 
         configured, config_errors = load_task_directory(
             project_root / "config" / "tasks",
@@ -602,7 +639,7 @@ class ConfigTests(unittest.TestCase):
         watch_click = next(
             step
             for step in watch_if.parameters["then"]
-            if step.get("text") == "%看至第%集%"
+            if step.get("texts") == ["%看至第%集%"]
         )
         self.assertEqual(watch_click["match_mode"], "fuzzy")
         self.assertIn(
@@ -616,11 +653,7 @@ class ConfigTests(unittest.TestCase):
         for path in sorted((project_root / "config" / "actions").glob("*.json")):
             data = json.loads(path.read_text(encoding="utf-8"))
             for index, step in enumerate(data.get("steps", []), start=1):
-                params = {
-                    key: value
-                    for key, value in step.items()
-                    if key != "type"
-                }
+                params = {key: value for key, value in step.items() if key != "type"}
                 errors = validate_action_params(step.get("type"), params)
                 self.assertEqual(
                     errors,
@@ -650,8 +683,7 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                step.get("type") == "detect"
-                and step.get("result_var") == "claim_state"
+                step.get("type") == "detect" and step.get("result_var") == "claim_state"
                 for step in watch_if.parameters.get("then", [])
             )
         )
@@ -679,8 +711,20 @@ class ConfigTests(unittest.TestCase):
                 load_task_directory(Path(directory) / "tasks")
 
     def test_launch_action_wait_seconds_rejects_negative_or_non_numeric(self) -> None:
+        # models 层不再校验 launch.wait_seconds；action_schema 是唯一边界，
+        # 负数/字符串在加载校验（validate_action_params）时报错。
+        self.assertEqual(validate_action_params("launch", {"wait_seconds": 0}), [])
+        self.assertEqual(
+            Action.from_dict({"type": "launch", "wait_seconds": -1}).parameters[
+                "wait_seconds"
+            ],
+            -1,
+        )
         for bad_value in (-1, "abc"):
             with self.subTest(bad_value=bad_value):
+                self.assertTrue(
+                    validate_action_params("launch", {"wait_seconds": bad_value})
+                )
                 with tempfile.TemporaryDirectory() as directory:
                     self._write_task(
                         directory,
@@ -692,7 +736,7 @@ class ConfigTests(unittest.TestCase):
                             "actions": [{"type": "launch", "wait_seconds": bad_value}],
                         },
                     )
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(ValueError, "wait_seconds"):
                         load_task_directory(Path(directory) / "tasks")
 
     def test_unknown_task_top_level_field_is_rejected(self) -> None:
@@ -711,15 +755,15 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "任务不支持字段"):
                 load_task_directory(Path(directory) / "tasks")
 
-    def test_mumu_vmindex_is_loaded_as_integer(self) -> None:
+    def test_mumu_vm_index_is_loaded_as_integer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text(json.dumps({"mumu_vmindex": 3}), encoding="utf-8")
+            path.write_text(json.dumps({"mumu_vm_index": 3}), encoding="utf-8")
             settings = load_settings(path)
             missing_path = Path(directory) / "missing" / "settings.json"
 
-        self.assertEqual(settings["mumu_vmindex"], 3)
-        self.assertIsInstance(settings["mumu_vmindex"], int)
+        self.assertEqual(settings["mumu_vm_index"], 3)
+        self.assertIsInstance(settings["mumu_vm_index"], int)
         with self.assertRaises(FileNotFoundError):
             load_settings(missing_path)
 
@@ -760,7 +804,9 @@ class ConfigTests(unittest.TestCase):
     def test_unknown_settings_are_dropped_without_bundled_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text(json.dumps({"custom_value": "from-config"}), encoding="utf-8")
+            path.write_text(
+                json.dumps({"custom_value": "from-config"}), encoding="utf-8"
+            )
             settings = load_settings(path)
 
         self.assertNotIn("custom_value", settings)
@@ -895,11 +941,11 @@ class ConfigTests(unittest.TestCase):
     def test_save_settings_creates_parent_and_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "settings.json"
-            save_settings(path, {"log_max_files": 7})
+            save_settings(path, {"max_log_files": 7})
 
             loaded = load_settings(path)
 
-        self.assertEqual(loaded["log_max_files"], 7)
+        self.assertEqual(loaded["max_log_files"], 7)
 
     def test_top_level_task_file_that_is_not_an_object_is_broken(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -927,23 +973,18 @@ class ConfigTests(unittest.TestCase):
             (actions_directory / "bad_json.json").write_text("{", encoding="utf-8")
             (actions_directory / "not_object.json").write_text("[]", encoding="utf-8")
             (actions_directory / "no_name.json").write_text(
-                json.dumps({"steps": [{"type": "wait", "seconds": 1}]}, ensure_ascii=False),
+                json.dumps(
+                    {"steps": [{"type": "wait", "seconds": 1}]}, ensure_ascii=False
+                ),
                 encoding="utf-8",
             )
             (actions_directory / "empty_steps.json").write_text(
                 json.dumps({"name": "empty", "steps": []}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            (actions_directory / "bad_params.json").write_text(
-                json.dumps(
-                    {"name": "bad_params", "params": [1], "steps": [{"type": "wait", "seconds": 1}]},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
             (actions_directory / "valid.json").write_text(
                 json.dumps(
-                    {"name": "valid", "params": [], "steps": [{"type": "wait", "seconds": 1}]},
+                    {"name": "valid", "steps": [{"type": "wait", "seconds": 1}]},
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
@@ -952,27 +993,91 @@ class ConfigTests(unittest.TestCase):
             library = load_action_library(actions_directory)
 
         self.assertIn("valid", library)
-        for broken_name in ("bad_json", "not_object", "no_name", "empty_steps", "bad_params"):
+        for broken_name in ("bad_json", "not_object", "no_name", "empty_steps"):
             self.assertIn("error", library[broken_name])
 
-    def test_coerce_scalars_restores_primitive_types(self) -> None:
-        coerced = _coerce_scalars(
-            {
-                "flag": "true",
-                "disabled": "false",
-                "count": "12",
-                "ratio": "1.5",
-                "text": "abc",
-                "items": ["3", "false"],
-            }
-        )
+    def test_expand_action_for_run_keeps_placeholder_and_text_types(self) -> None:
+        # 整串 ${var} 占位符保留变量原始类型；texts 列表中的字面量
+        # "123"/"true" 是合法文本目标，原样保留、不做类型强转。
+        action = {
+            "type": "click",
+            "locate": "ui",
+            "texts": ["123"],
+            "timeout_seconds": "${seconds}",
+        }
+        actions, error = expand_action_for_run(action, {}, {"seconds": 12})
+        self.assertIsNone(error)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].parameters["texts"], ["123"])
+        self.assertEqual(actions[0].parameters["timeout_seconds"], 12)
 
-        self.assertIs(coerced["flag"], True)
-        self.assertIs(coerced["disabled"], False)
-        self.assertEqual(coerced["count"], 12)
-        self.assertEqual(coerced["ratio"], 1.5)
-        self.assertEqual(coerced["text"], "abc")
-        self.assertEqual(coerced["items"], [3, False])
+        action = {
+            "type": "click",
+            "locate": "ocr",
+            "texts": ["true"],
+            "timeout_seconds": 5,
+        }
+        actions, error = expand_action_for_run(action, {}, {})
+        self.assertIsNone(error)
+        self.assertEqual(actions[0].parameters["texts"], ["true"])
+
+        # 整串占位符解析为列表时展开成 texts 列表。
+        action = {
+            "type": "click",
+            "locate": "ui",
+            "target": "text",
+            "texts": "${labels}",
+        }
+        actions, error = expand_action_for_run(action, {}, {"labels": ["签到", "领取"]})
+        self.assertIsNone(error)
+        self.assertEqual(actions[0].parameters["texts"], ["签到", "领取"])
+
+    def test_click_requires_non_empty_texts_list(self) -> None:
+        # 旧字段 text / 裸字符串 texts 不再兼容：一律加载期校验失败。
+        self.assertEqual(
+            validate_action_params(
+                "click", {"locate": "ui", "target": "text", "texts": ["签到"]}
+            ),
+            [],
+        )
+        # skip_if_texts 允许省略或空列表，但不接受裸字符串。
+        self.assertEqual(
+            validate_action_params(
+                "click",
+                {
+                    "locate": "ui",
+                    "target": "text",
+                    "texts": ["签到"],
+                    "skip_if_texts": [],
+                },
+            ),
+            [],
+        )
+        self.assertTrue(
+            validate_action_params(
+                "click",
+                {
+                    "locate": "ui",
+                    "target": "text",
+                    "texts": ["签到"],
+                    "skip_if_texts": "已签到",
+                },
+            )
+        )
+        for bad_params in (
+            {"text": "签到"},  # 旧字段：text 已废弃
+            {"texts": "签到"},  # 裸字符串不再接受
+            {"texts": []},  # 必填且非空
+            {"texts": ["签到", "  "]},  # 元素必须是非空字符串
+        ):
+            with self.subTest(bad_params=bad_params):
+                params = {"locate": "ui", "target": "text", **bad_params}
+                self.assertTrue(validate_action_params("click", params))
+                actions, error = expand_action_for_run(
+                    {"type": "click", **params}, {}, {}
+                )
+                self.assertEqual(actions, [])
+                self.assertTrue(error)
 
     def test_native_number_rejects_non_finite_and_fractional_integers(self) -> None:
         self.assertEqual(_native_number(float("inf"), 1), 1)
@@ -995,23 +1100,15 @@ class ConfigTests(unittest.TestCase):
         library = {
             "cycle": {
                 "name": "cycle",
-                "params": [],
                 "steps": [{"type": "compound", "name": "cycle"}],
             },
             "bad_step": {
                 "name": "bad_step",
-                "params": [],
                 "steps": [123],
             },
             "bad_action": {
                 "name": "bad_action",
-                "params": [],
                 "steps": [{"type": "wait", "seconds": "bad"}],
-            },
-            "bad_params": {
-                "name": "bad_params",
-                "params": [],
-                "steps": [{"type": "wait", "seconds": 1}],
             },
         }
         cycle = Action("compound", {"name": "cycle"})
@@ -1024,10 +1121,6 @@ class ConfigTests(unittest.TestCase):
 
         bad_action = Action("compound", {"name": "bad_action"})
         _actions, error = _expand_action(bad_action, library, {}, ())
-        self.assertTrue(error)
-
-        bad_params = Action("compound", {"name": "bad_params", "params": "not-dict"})
-        _actions, error = _expand_action(bad_params, library, {}, ())
         self.assertTrue(error)
 
     def test_expand_action_applies_outer_retries_to_steps(self) -> None:
@@ -1071,3 +1164,85 @@ class ConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(result, ["a", "b", "prefix-demo", "plain"])
+
+        # 字符串中间嵌入列表/布尔：输出可读文本而不是 Python repr。
+        self.assertEqual(
+            _substitute("点击${labels}", {"labels": ["A", "B"]}),
+            "点击A, B",
+        )
+        self.assertEqual(
+            _substitute("flag=${flag}", {"flag": True}),
+            "flag=true",
+        )
+        # 整串占位符保留变量的原始类型。
+        self.assertEqual(_substitute("${count}", {"count": 123}), 123)
+        self.assertEqual(_substitute("${flag}", {"flag": True}), True)
+
+    def test_compound_expansion_keeps_numeric_like_text_params(self) -> None:
+        library = {
+            "demo": {
+                "name": "demo",
+                "steps": [
+                    {
+                        "type": "click",
+                        "locate": "ui",
+                        "texts": ["123"],
+                        "timeout_seconds": 5,
+                    },
+                    {
+                        "type": "click",
+                        "locate": "ocr",
+                        "texts": ["true"],
+                        "timeout_seconds": 5,
+                    },
+                ],
+            }
+        }
+        actions, error = _expand_action(
+            Action("compound", {"name": "demo"}), library, {}, ()
+        )
+        self.assertIsNone(error)
+        self.assertEqual(actions[0].parameters["texts"], ["123"])
+        self.assertEqual(actions[1].parameters["texts"], ["true"])
+
+    def test_email_recipients_rejects_bare_string(self) -> None:
+        # _sanitize_email 只接受 list：裸字符串不再拆分成收件人，直接置空；
+        # notify_on 同样只认 list，str 输入回退默认值。
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "email_notification": {
+                            "recipients": "first@example.com; second@example.com",
+                            "notify_on": "success",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            email = load_settings(path)["email_notification"]
+        self.assertEqual(email["recipients"], [])
+        self.assertEqual(email["notify_on"], ["success", "failed", "stopped"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "email_notification": {
+                            "recipients": [
+                                " first@example.com ",
+                                "",
+                                None,
+                                "second@example.com",
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            email = load_settings(path)["email_notification"]
+        self.assertEqual(
+            email["recipients"], ["first@example.com", "second@example.com"]
+        )

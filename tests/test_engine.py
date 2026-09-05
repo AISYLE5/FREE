@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from free_app.action_schema import effective_parameters, validate_action_params
 from free_app.adb import AdbError, Device, ScreenInfo
 from free_app.config import (
     expand_action_for_run,
@@ -68,6 +69,17 @@ class FakeAdb:
         return b"test screenshot"
 
 
+def coord_click(x: int, y: int) -> dict[str, object]:
+    """构造 coordinate 点击的嵌套动作（该变体无轮询参数）。"""
+
+    return {
+        "type": "click",
+        "locate": "coordinate",
+        "x": x,
+        "y": y,
+    }
+
+
 class EngineTests(unittest.TestCase):
     def test_snapshot_logs_hierarchy_recognition_statistics(self) -> None:
         logs: list[str] = []
@@ -75,7 +87,6 @@ class EngineTests(unittest.TestCase):
             FakeAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -96,7 +107,6 @@ class EngineTests(unittest.TestCase):
             UnreadableAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -116,7 +126,6 @@ class EngineTests(unittest.TestCase):
             MalformedXmlAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -140,7 +149,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=sleep,
         )
 
@@ -156,7 +164,7 @@ class EngineTests(unittest.TestCase):
                         "duration_ms": 800,
                     },
                 )
-        )
+            )
 
         self.assertEqual(adb.swipes, [(540, 1450, 540, 300, 800)])
         self.assertEqual(sleeps, [])
@@ -170,7 +178,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_client=recognizer,
         )
@@ -211,7 +218,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_client=lambda _image: ["畅玩卡"],
         )
@@ -247,6 +253,133 @@ class EngineTests(unittest.TestCase):
             )
         self.assertEqual(len(adb.swipes), 6)
 
+    def test_swipe_until_stops_after_finding_target(self) -> None:
+        adb = FakeAdb()
+
+        def recognizer(_image: bytes) -> list[str]:
+            return ["签到"] if len(adb.swipes) >= 2 else ["畅玩卡"]
+
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+            ocr_client=recognizer,
+        )
+        engine._execute(
+            Action(
+                "swipe_until",
+                {
+                    "x1": 540,
+                    "y1": 1450,
+                    "x2": 540,
+                    "y2": 300,
+                    "duration_ms": 800,
+                    "locate": "ocr",
+                    "texts": ["签到"],
+                    "result_var": "state",
+                    "max_iterations": 6,
+                    "timeout_seconds": 0.05,
+                    "interval_seconds": 0,
+                },
+            )
+        )
+
+        self.assertEqual(len(adb.swipes), 2)
+        self.assertTrue(engine._context.get("state_found"))
+
+    def test_swipe_until_raises_after_max_swipes(self) -> None:
+        adb = FakeAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+            ocr_client=lambda _image: ["畅玩卡"],
+        )
+        with self.assertRaisesRegex(ActionError, "滑动直到超过最大次数 6"):
+            engine._execute(
+                Action(
+                    "swipe_until",
+                    {
+                        "x1": 540,
+                        "y1": 1450,
+                        "x2": 540,
+                        "y2": 300,
+                        "duration_ms": 800,
+                        "locate": "ocr",
+                        "texts": ["签到"],
+                        "result_var": "state",
+                        "max_iterations": 6,
+                        "timeout_seconds": 0.05,
+                        "interval_seconds": 0,
+                    },
+                )
+            )
+        self.assertEqual(len(adb.swipes), 6)
+        self.assertFalse(engine._context.get("state_found"))
+
+    def test_swipe_until_returns_immediately_when_already_found(self) -> None:
+        adb = FakeAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+            ocr_client=lambda _image: ["签到"],
+        )
+        engine._execute(
+            Action(
+                "swipe_until",
+                {
+                    "x1": 540,
+                    "y1": 1450,
+                    "x2": 540,
+                    "y2": 300,
+                    "duration_ms": 800,
+                    "locate": "ocr",
+                    "texts": ["签到"],
+                    "result_var": "state",
+                    "max_iterations": 6,
+                    "timeout_seconds": 0.05,
+                    "interval_seconds": 0,
+                },
+            )
+        )
+
+        self.assertEqual(adb.swipes, [])
+        self.assertTrue(engine._context.get("state_found"))
+
+    def test_swipe_until_without_result_var_stops_after_finding(self) -> None:
+        adb = FakeAdb()
+
+        def recognizer(_image: bytes) -> list[str]:
+            return ["签到"] if len(adb.swipes) >= 2 else ["畅玩卡"]
+
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+            ocr_client=recognizer,
+        )
+        engine._execute(
+            Action(
+                "swipe_until",
+                {
+                    "x1": 540,
+                    "y1": 1450,
+                    "x2": 540,
+                    "y2": 300,
+                    "duration_ms": 800,
+                    "locate": "ocr",
+                    "texts": ["签到"],
+                    "max_iterations": 6,
+                    "timeout_seconds": 0.05,
+                    "interval_seconds": 0,
+                },
+            )
+        )
+
+        self.assertEqual(len(adb.swipes), 2)
+        self.assertTrue(engine._context.get("_swipe_until_state_found"))
+
     def test_detect_tolerates_transient_dump_failure(self) -> None:
         class FlakyDumpAdb(FakeAdb):
             def dump_ui(self) -> str:
@@ -262,7 +395,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -295,47 +427,55 @@ class EngineTests(unittest.TestCase):
             result = AutomationEngine(
                 adb,
                 screenshot_directory,
-                poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="key",
             ).run(task)
             files = list(screenshot_directory.glob("capture-demo_screenshot_*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
         self.assertEqual(len(files), 1)
         self.assertEqual(len(result.key_screenshots), 1)
 
-    def test_capture_screenshot_action_skipped_at_none_level(self) -> None:
+    def test_capture_screenshot_action_skipped_when_screenshots_disabled(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="capture-none-demo",
             name="Capture none demo",
             package="demo.package",
-            actions=(Action("capture_screenshot", {"label": "返回小黑盒"}),),
+            actions=(Action("capture_screenshot", {}),),
         )
         with tempfile.TemporaryDirectory() as directory:
             screenshot_directory = Path(directory)
             result = AutomationEngine(
                 adb,
                 screenshot_directory,
-                poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
         self.assertEqual(result.status, RunStatus.SUCCESS)
         self.assertEqual(files, [])
 
-    def test_basic_adb_actions_are_dispatched_with_normalized_arguments(self) -> None:
+    def test_basic_adb_actions_are_dispatched_with_typed_arguments(self) -> None:
         adb = FakeAdb()
-        engine = AutomationEngine(adb, Path("screenshots"), sleep_function=lambda _seconds: None)
+        engine = AutomationEngine(
+            adb, Path("screenshots"), sleep_function=lambda _seconds: None
+        )
 
         engine._execute(
-            Action("click", {"locate": "coordinate", "x": "12", "y": "34"})
+            Action(
+                "click",
+                {
+                    "locate": "coordinate",
+                    "x": 12,
+                    "y": 34,
+                    "timeout_seconds": 0,
+                    "interval_seconds": 0,
+                },
+            )
         )
         engine._execute(
             Action(
                 "swipe",
-                {"x1": "1", "y1": "2", "x2": "3", "y2": "4"},
+                {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
             )
         )
         engine._execute(Action("back"))
@@ -344,15 +484,32 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(adb.swipes, [(1, 2, 3, 4, 300)])
         self.assertEqual(adb.backs, [1])
 
+    def test_schema_rejects_string_numbers_in_numeric_params(self) -> None:
+        self.assertTrue(
+            validate_action_params(
+                "click", {"locate": "coordinate", "x": "12", "y": "34"}
+            )
+        )
+        self.assertTrue(
+            validate_action_params(
+                "swipe", {"x1": "1", "y1": "2", "x2": "3", "y2": "4"}
+            )
+        )
+        self.assertTrue(validate_action_params("wait", {"seconds": "5"}))
+        self.assertTrue(validate_action_params("launch", {"wait_seconds": "3"}))
+
     def test_invalid_and_unknown_actions_fail_explicitly(self) -> None:
         engine = AutomationEngine(FakeAdb(), Path("screenshots"))
 
         with self.assertRaisesRegex(ActionError, "动作缺少参数: result_var"):
-            engine._execute(
-                Action("detect", {"locate": "ocr", "texts": ["领取"]})
-            )
+            engine._execute(Action("detect", {"locate": "ocr", "texts": ["领取"]}))
         with self.assertRaisesRegex(ActionError, "不支持的动作类型"):
             engine._execute(Action("removed_action"))
+
+        errors = validate_action_params("detect", {"locate": "ocr", "texts": ["领取"]})
+        self.assertTrue(
+            any("结果变量（result_var）为必填项" in error for error in errors)
+        )
 
     def test_launch_without_foreground_probe_stops_after_one_launch(self) -> None:
         class NoForegroundProbe:
@@ -365,9 +522,13 @@ class EngineTests(unittest.TestCase):
                 self.launched.append(package)
 
         adb = NoForegroundProbe()
-        engine = AutomationEngine(adb, Path("screenshots"), sleep_function=lambda _seconds: None)
+        engine = AutomationEngine(
+            adb, Path("screenshots"), sleep_function=lambda _seconds: None
+        )
 
-        engine._execute(Action("launch", {"package": "demo.package", "wait_seconds": 0}))
+        engine._execute(
+            Action("launch", {"package": "demo.package", "wait_seconds": 0})
+        )
 
         self.assertEqual(adb.launched, ["demo.package"])
 
@@ -413,7 +574,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_client=lambda _image: ["领取"],
         )
@@ -438,16 +598,15 @@ class EngineTests(unittest.TestCase):
         class DetectUiAdb(FakeAdb):
             def dump_ui(self) -> str:
                 return (
-                    '<hierarchy>'
+                    "<hierarchy>"
                     '<node content-desc="已领取" visible-to-user="true" '
                     'bounds="[0,0][100,80]" />'
-                    '</hierarchy>'
+                    "</hierarchy>"
                 )
 
         engine = AutomationEngine(
             DetectUiAdb(),
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -471,7 +630,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_client=lambda _image: ["其他"],
         )
@@ -498,7 +656,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_client=lambda _image: ["其他"],
         )
@@ -521,16 +678,15 @@ class EngineTests(unittest.TestCase):
         class ResourceAdb(FakeAdb):
             def dump_ui(self) -> str:
                 return (
-                    '<hierarchy>'
+                    "<hierarchy>"
                     '<node resource-id="com.example:id/claim" visible-to-user="true" '
                     'bounds="[0,0][100,80]" />'
-                    '</hierarchy>'
+                    "</hierarchy>"
                 )
 
         engine = AutomationEngine(
             ResourceAdb(),
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -555,7 +711,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -566,8 +721,8 @@ class EngineTests(unittest.TestCase):
                 {
                     "var": "state",
                     "equals": "领取",
-                    "then": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
-                    "else": [{"type": "click", "locate": "coordinate", "x": 3, "y": 4}],
+                    "then": [coord_click(1, 2)],
+                    "else": [coord_click(3, 4)],
                 },
             )
         )
@@ -580,8 +735,8 @@ class EngineTests(unittest.TestCase):
                 {
                     "var": "state",
                     "equals": "领取",
-                    "then": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
-                    "else": [{"type": "click", "locate": "coordinate", "x": 3, "y": 4}],
+                    "then": [coord_click(1, 2)],
+                    "else": [coord_click(3, 4)],
                 },
             )
         )
@@ -591,17 +746,16 @@ class EngineTests(unittest.TestCase):
         class ClickUiAdb(FakeAdb):
             def dump_ui(self) -> str:
                 return (
-                    '<hierarchy>'
+                    "<hierarchy>"
                     '<node text="签到活动入口" clickable="true" enabled="true" '
                     'visible-to-user="true" bounds="[0,0][200,100]" />'
-                    '</hierarchy>'
+                    "</hierarchy>"
                 )
 
         adb = ClickUiAdb()
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -611,7 +765,7 @@ class EngineTests(unittest.TestCase):
                 {
                     "locate": "ui",
                     "target": "text",
-                    "text": "签到%",
+                    "texts": ["签到%"],
                     "match_mode": "fuzzy",
                     "timeout_seconds": 0.1,
                 },
@@ -620,12 +774,44 @@ class EngineTests(unittest.TestCase):
 
         self.assertEqual(adb.taps, [(100, 50)])
 
-    def test_click_ocr_text_does_not_need_result_var(self) -> None:
+    def test_click_ui_text_matches_first_of_multiple_targets(self) -> None:
+        class MultiTargetClickAdb(FakeAdb):
+            def dump_ui(self) -> str:
+                return (
+                    "<hierarchy>"
+                    '<node text="签到" clickable="true" enabled="true" '
+                    'visible-to-user="true" bounds="[0,0][100,80]" />'
+                    '<node text="领取" clickable="true" enabled="true" '
+                    'visible-to-user="true" bounds="[100,0][200,80]" />'
+                    "</hierarchy>"
+                )
+
+        adb = MultiTargetClickAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+        )
+
+        engine._execute(
+            Action(
+                "click",
+                {
+                    "locate": "ui",
+                    "target": "text",
+                    "texts": ["签到", "领取"],
+                    "timeout_seconds": 0.1,
+                },
+            )
+        )
+
+        self.assertEqual(adb.taps, [(50, 40)])
+
+    def test_click_ocr_text_matches_any_of_multiple_targets(self) -> None:
         adb = FakeAdb()
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
             ocr_boxes_client=lambda _image: [
                 ("看至第1集", [(100, 200), (300, 200), (300, 300), (100, 300)])
@@ -637,7 +823,32 @@ class EngineTests(unittest.TestCase):
                 "click",
                 {
                     "locate": "ocr",
-                    "text": "看至第_集",
+                    "texts": ["看至第_集", "再看"],
+                    "match_mode": "fuzzy",
+                    "timeout_seconds": 0.1,
+                },
+            )
+        )
+
+        self.assertEqual(adb.taps, [(200, 250)])
+
+    def test_click_ocr_text_does_not_need_result_var(self) -> None:
+        adb = FakeAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+            ocr_boxes_client=lambda _image: [
+                ("看至第1集", [(100, 200), (300, 200), (300, 300), (100, 300)])
+            ],
+        )
+
+        engine._execute(
+            Action(
+                "click",
+                {
+                    "locate": "ocr",
+                    "texts": ["看至第_集"],
                     "match_mode": "fuzzy",
                     "timeout_seconds": 0.1,
                 },
@@ -650,17 +861,16 @@ class EngineTests(unittest.TestCase):
         class SkipClickAdb(FakeAdb):
             def dump_ui(self) -> str:
                 return (
-                    '<hierarchy>'
+                    "<hierarchy>"
                     '<node content-desc="已签到" visible-to-user="true" '
                     'bounds="[0,0][100,80]" />'
-                    '</hierarchy>'
+                    "</hierarchy>"
                 )
 
         adb = SkipClickAdb()
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -670,7 +880,7 @@ class EngineTests(unittest.TestCase):
                 {
                     "locate": "ui",
                     "target": "text",
-                    "text": "签到",
+                    "texts": ["签到"],
                     "skip_if_texts": ["已签到"],
                     "timeout_seconds": 0.1,
                 },
@@ -683,17 +893,16 @@ class EngineTests(unittest.TestCase):
         class SkipAdb(FakeAdb):
             def dump_ui(self) -> str:
                 return (
-                    '<hierarchy>'
+                    "<hierarchy>"
                     '<node content-desc="已签到" visible-to-user="true" '
                     'bounds="[0,0][100,80]" />'
-                    '</hierarchy>'
+                    "</hierarchy>"
                 )
 
         adb = SkipAdb()
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
         engine._execute(
@@ -715,7 +924,7 @@ class EngineTests(unittest.TestCase):
                 {
                     "var": "skip_state_found",
                     "equals": False,
-                    "then": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
+                    "then": [coord_click(1, 2)],
                 },
             )
         )
@@ -731,13 +940,13 @@ class EngineTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             result = AutomationEngine(
-                adb, Path(directory), poll_interval=0, sleep_function=lambda _seconds: None
+                adb, Path(directory), sleep_function=lambda _seconds: None
             ).run(task)
             self.assertEqual(result.status, RunStatus.FAILED)
             self.assertIsNotNone(result.screenshot)
             self.assertTrue(result.screenshot.exists())
 
-    def test_key_level_captures_screenshot_actions_only(self) -> None:
+    def test_screenshots_enabled_captures_screenshot_actions_only(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="key-demo",
@@ -750,9 +959,7 @@ class EngineTests(unittest.TestCase):
             result = AutomationEngine(
                 adb,
                 screenshot_directory,
-                poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="key",
             ).run(task)
             step_files = list(screenshot_directory.glob("key-demo_step_01_*.png"))
             key_files = list(screenshot_directory.glob("key-demo_screenshot_*.png"))
@@ -762,22 +969,21 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(key_files), 1)
         self.assertEqual(len(result.key_screenshots), 1)
 
-    def test_none_level_saves_no_action_or_key_screenshots(self) -> None:
+    def test_screenshots_disabled_saves_nothing(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="none-demo",
             name="None demo",
             package="demo.package",
-            actions=(Action("capture_screenshot", {"label": "已签到"}),),
+            actions=(Action("capture_screenshot", {}),),
         )
         with tempfile.TemporaryDirectory() as directory:
             screenshot_directory = Path(directory)
             result = AutomationEngine(
                 adb,
                 screenshot_directory,
-                poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
@@ -785,7 +991,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(files, [])
         self.assertEqual(result.key_screenshots, ())
 
-    def test_none_level_skips_failure_screenshot_too(self) -> None:
+    def test_screenshots_disabled_skips_failure_screenshot(self) -> None:
         adb = FakeAdb()
         task = TaskDefinition(
             id="none-failure-demo",
@@ -798,46 +1004,14 @@ class EngineTests(unittest.TestCase):
             result = AutomationEngine(
                 adb,
                 screenshot_directory,
-                poll_interval=0,
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshots_enabled=False,
             ).run(task)
             files = list(screenshot_directory.glob("*.png"))
 
         self.assertEqual(result.status, RunStatus.FAILED)
         self.assertIsNone(result.screenshot)
         self.assertEqual(files, [])
-
-    def test_all_level_keeps_checkpoints_and_key_pages(self) -> None:
-        adb = FakeAdb()
-        logs: list[str] = []
-        task = TaskDefinition(
-            id="all-demo",
-            name="All demo",
-            package="demo.package",
-            actions=(Action("capture_screenshot", {}),),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            screenshot_directory = Path(directory)
-            result = AutomationEngine(
-                adb,
-                screenshot_directory,
-                poll_interval=0,
-                sleep_function=lambda _seconds: None,
-                screenshot_save_level="all",
-                log_callback=logs.append,
-            ).run(task)
-            step_files = list(screenshot_directory.glob("all-demo_step_01_*.png"))
-            key_files = list(screenshot_directory.glob("all-demo_screenshot_*.png"))
-
-        self.assertEqual(result.status, RunStatus.SUCCESS)
-        self.assertEqual(len(step_files), 2)
-        self.assertEqual(len(key_files), 1)
-        self.assertEqual(len(result.key_screenshots), 1)
-        joined_logs = "\n".join(logs)
-        self.assertIn("截图[before]", joined_logs)
-        self.assertIn("截图[after]", joined_logs)
-        self.assertIn("关键页面截图:", joined_logs)
 
     def test_lifecycle_actions_use_task_level_package_and_wait(self) -> None:
         adb = FakeAdb()
@@ -864,7 +1038,6 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     log_callback=logs.append,
-                    poll_interval=0,
                     sleep_function=sleep,
                 ).run(task)
 
@@ -873,19 +1046,52 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(adb.launched, ["tv.danmaku.bili"])
         self.assertAlmostEqual(sum(sleeps), 7.5, places=6)
         self.assertTrue(any("等待 7.5s" in message for message in logs))
-        self.assertTrue(any('"package":"tv.danmaku.bili"' in message for message in logs))
+        self.assertTrue(
+            any('"package":"tv.danmaku.bili"' in message for message in logs)
+        )
         self.assertTrue(any('"wait_seconds":7.5' in message for message in logs))
 
     def test_effective_parameters_include_implicit_defaults(self) -> None:
-        from free_app.action_schema import effective_parameters
-
         self.assertEqual(
             effective_parameters("wait", {}),
             {"seconds": 1, "retries": 0},
         )
         self.assertEqual(
             effective_parameters("launch", {}),
-            {"launch_attempts": 3, "retries": 0},
+            {"launch_attempts": 3, "retries": 0, "wait_seconds": 3},
+        )
+        self.assertEqual(
+            effective_parameters("click", {}),
+            {
+                "locate": "ui",
+                "target": "text",
+                "match_mode": "exact",
+                "timeout_seconds": 15,
+                "interval_seconds": 0.5,
+                "retries": 0,
+            },
+        )
+        self.assertEqual(
+            effective_parameters(
+                "swipe_until",
+                {"x1": 1, "y1": 2, "x2": 3, "y2": 4, "texts": ["签到"]},
+            ),
+            {
+                "x1": 1,
+                "y1": 2,
+                "x2": 3,
+                "y2": 4,
+                "texts": ["签到"],
+                "locate": "ocr",
+                "duration_ms": 300,
+                "result_var": "_swipe_until_state",
+                "match_mode": "exact",
+                "timeout_seconds": 8,
+                "interval_seconds": 1,
+                "continue_on_timeout": True,
+                "max_iterations": 5,
+                "retries": 0,
+            },
         )
         self.assertEqual(
             effective_parameters("swipe", {"x1": 1, "y1": 2, "x2": 3, "y2": 4}),
@@ -910,7 +1116,6 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
         engine.request_stop()
@@ -939,7 +1144,6 @@ class EngineTests(unittest.TestCase):
             adb,
             Path("screenshots"),
             log_callback=logs.append,
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -955,7 +1159,9 @@ class EngineTests(unittest.TestCase):
         )
 
         self.assertEqual(adb.launched, ["tv.danmaku.bili", "tv.danmaku.bili"])
-        self.assertTrue(any("前台为 app.lawnchair，将重试" in message for message in logs))
+        self.assertTrue(
+            any("前台为 app.lawnchair，将重试" in message for message in logs)
+        )
 
     def test_launch_continues_with_warning_when_foreground_never_changes(self) -> None:
         class StuckAdb:
@@ -976,7 +1182,6 @@ class EngineTests(unittest.TestCase):
             adb,
             Path("screenshots"),
             log_callback=logs.append,
-            poll_interval=0,
             sleep_function=lambda _seconds: None,
         )
 
@@ -992,16 +1197,29 @@ class EngineTests(unittest.TestCase):
         )
 
         self.assertEqual(adb.launched, ["tv.danmaku.bili", "tv.danmaku.bili"])
-        self.assertTrue(any("警告: 启动 2 次后前台仍为 app.lawnchair" in message for message in logs))
+        self.assertTrue(
+            any(
+                "警告: 启动 2 次后前台仍为 app.lawnchair" in message for message in logs
+            )
+        )
 
-    def test_invalid_screenshot_level_falls_back_to_all(self) -> None:
+    def test_invalid_screenshots_enabled_value_is_coerced_to_bool(self) -> None:
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_save_level="bad",
+            screenshots_enabled="bad",
         )
 
-        self.assertEqual(engine.screenshot_save_level, "all")
+        self.assertIs(engine.screenshots_enabled, True)
+
+    def test_screenshots_enabled_false_disables_service(self) -> None:
+        engine = AutomationEngine(
+            FakeAdb(),
+            Path("screenshots"),
+            screenshots_enabled=0,
+        )
+
+        self.assertIs(engine.screenshots_enabled, False)
 
     def test_run_with_retries_sleeps_between_failed_attempts(self) -> None:
         sleeps: list[float] = []
@@ -1147,9 +1365,35 @@ class EngineTests(unittest.TestCase):
             sleep_function=lambda _seconds: None,
         )
 
-        engine._execute(Action("click", {"locate": "coordinate", "x": -5, "y": 99999}))
+        engine._execute(
+            Action(
+                "click",
+                {
+                    "locate": "coordinate",
+                    "x": -5,
+                    "y": 99999,
+                    "timeout_seconds": 0,
+                    "interval_seconds": 0,
+                },
+            )
+        )
 
         self.assertEqual(adb.taps, [(0, SCREEN_HEIGHT - 1)])
+
+    def test_coordinate_click_without_polling_defaults_succeeds(self) -> None:
+        # click 的 coordinate 变体不声明轮询参数，_click 的 coordinate 分支
+        # 先于任何 timeout/interval 读取返回——裸坐标点击直接可用
+        # （随附 config/actions/bilibili_ad.json 即此形态）。
+        adb = FakeAdb()
+        engine = AutomationEngine(
+            adb,
+            Path("screenshots"),
+            sleep_function=lambda _seconds: None,
+        )
+
+        engine._execute(Action("click", {"locate": "coordinate", "x": 12, "y": 34}))
+
+        self.assertEqual(adb.taps, [(12, 34)])
 
     def test_click_ocr_skips_when_skip_text_is_present(self) -> None:
         adb = FakeAdb()
@@ -1167,7 +1411,7 @@ class EngineTests(unittest.TestCase):
                 "click",
                 {
                     "locate": "ocr",
-                    "text": "领取",
+                    "texts": ["领取"],
                     "skip_if_texts": ["已领取"],
                     "timeout_seconds": 0.1,
                     "interval_seconds": 0,
@@ -1198,7 +1442,7 @@ class EngineTests(unittest.TestCase):
                     {
                         "locate": "ui",
                         "target": "text",
-                        "text": "领取",
+                        "texts": ["领取"],
                         "timeout_seconds": 0,
                         "interval_seconds": 0,
                     },
@@ -1215,13 +1459,51 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ActionError, "不支持复合动作"):
             engine._run_nested_steps([{"type": "compound", "name": "demo"}], "demo")
 
-    def test_string_values_and_match_mode_helpers(self) -> None:
-        engine = AutomationEngine(FakeAdb(), Path("screenshots"))
-
-        self.assertEqual(engine._string_values(" 领取 "), ["领取"])
-        self.assertEqual(engine._string_values(None), [])
-        with self.assertRaisesRegex(ActionError, "不支持的文本匹配方式"):
-            engine._text_match_mode("regex")
+    def test_schema_validates_match_mode_lists_and_numeric_minimums(self) -> None:
+        errors = validate_action_params(
+            "click",
+            {"locate": "ui", "texts": ["领取"], "match_mode": "regex"},
+        )
+        self.assertTrue(
+            any("匹配方式（match_mode）格式不正确" in error for error in errors)
+        )
+        errors = validate_action_params(
+            "click",
+            {
+                "locate": "ui",
+                "texts": ["领取"],
+                "skip_if_texts": "已签到",
+            },
+        )
+        self.assertTrue(
+            any("跳过条件（skip_if_texts）格式不正确" in error for error in errors)
+        )
+        self.assertEqual(
+            validate_action_params(
+                "click",
+                {"locate": "ui", "texts": ["领取"], "skip_if_texts": []},
+            ),
+            [],
+        )
+        errors = validate_action_params("capture_screenshot", {"label": "返回小黑盒"})
+        self.assertTrue(any("不支持参数: label" in error for error in errors))
+        errors = validate_action_params(
+            "swipe", {"x1": 0, "y1": 0, "x2": 1, "y2": 1, "duration_ms": -1}
+        )
+        self.assertTrue(any("duration_ms" in error for error in errors))
+        errors = validate_action_params("launch", {"launch_attempts": 0})
+        self.assertTrue(any("launch_attempts" in error for error in errors))
+        errors = validate_action_params("wait", {"seconds": -1})
+        self.assertTrue(any("seconds" in error for error in errors))
+        errors = validate_action_params(
+            "click", {"locate": "ui", "texts": ["领取"], "retries": -1}
+        )
+        self.assertTrue(any("retries" in error for error in errors))
+        errors = validate_action_params(
+            "loop_until",
+            {"var": "state", "equals": True, "max_iterations": 0},
+        )
+        self.assertTrue(any("max_iterations" in error for error in errors))
 
     def test_ocr_boxes_normalizes_malformed_results(self) -> None:
         engine = AutomationEngine(
@@ -1262,7 +1544,7 @@ class EngineTests(unittest.TestCase):
 
         self.assertTrue(any("读取失败" in message for message in logs))
 
-    def test_capture_checkpoint_and_key_screenshot_ignore_screenshot_failures(self) -> None:
+    def test_screenshot_helpers_ignore_screenshot_failures(self) -> None:
         class BrokenScreenshotAdb(FakeAdb):
             def screenshot(self) -> bytes:
                 raise OSError("screenshot failed")
@@ -1272,10 +1554,8 @@ class EngineTests(unittest.TestCase):
             BrokenScreenshotAdb(),
             Path("screenshots"),
             log_callback=logs.append,
-            screenshot_save_level="all",
         )
 
-        engine._capture_checkpoint("demo", 1, "before")
         engine._capture_key_screenshot("demo", "成功")
         self.assertIsNone(engine._save_failure_screenshot("demo", 1))
 
@@ -1286,7 +1566,7 @@ class EngineTests(unittest.TestCase):
         engine = AutomationEngine(
             FakeAdb(),
             Path("screenshots"),
-            screenshot_save_level="key",
+            screenshots_enabled=True,
             progress_callback=lambda index, total, description: progress.append(
                 (index, total, description)
             ),
@@ -1314,18 +1594,23 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(StopRequested):
             engine._run_with_retries(Action("unknown_action", {"retries": 2}))
 
-    def test_detect_rejects_bad_locate_and_missing_targets(self) -> None:
-        engine = AutomationEngine(FakeAdb(), Path("screenshots"))
-
-        with self.assertRaisesRegex(ActionError, "不支持的检测来源"):
-            engine._execute(
-                Action(
-                    "detect",
-                    {"locate": "bad", "texts": ["领取"], "result_var": "state"},
-                )
-            )
-        with self.assertRaisesRegex(ActionError, "缺少 texts"):
-            engine._execute(Action("detect", {"locate": "ocr", "result_var": "state"}))
+    def test_schema_rejects_bad_detect_locate_and_missing_targets(self) -> None:
+        errors = validate_action_params(
+            "detect",
+            {"locate": "bad", "texts": ["领取"], "result_var": "state"},
+        )
+        self.assertTrue(
+            any("detect 的 locate 必须是 ocr/ui" in error for error in errors)
+        )
+        errors = validate_action_params(
+            "detect", {"locate": "ocr", "result_var": "state"}
+        )
+        self.assertTrue(any("目标文本（texts）为必填项" in error for error in errors))
+        errors = validate_action_params(
+            "detect",
+            {"locate": "ocr", "texts": [], "result_var": "state"},
+        )
+        self.assertTrue(any("目标文本（texts）格式不正确" in error for error in errors))
 
     def test_if_handles_string_boolean_and_missing_equals(self) -> None:
         adb = FakeAdb()
@@ -1341,35 +1626,80 @@ class EngineTests(unittest.TestCase):
                 {
                     "var": "state",
                     "equals": "false",
-                    "then": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
-                    "else": [{"type": "click", "locate": "coordinate", "x": 3, "y": 4}],
+                    "then": [coord_click(1, 2)],
+                    "else": [coord_click(3, 4)],
                 },
             )
         )
         self.assertEqual(adb.taps, [(3, 4)])
 
-        with self.assertRaisesRegex(ActionError, "缺少有效的 equals"):
+        errors = validate_action_params("if", {"var": "state"})
+        self.assertTrue(any("等于（equals）为必填项" in error for error in errors))
+        # 绕过加载校验直接喂给引擎：缺失的必填参数按 KeyError 冒泡。
+        with self.assertRaises(KeyError):
             engine._execute(Action("if", {"var": "state"}))
 
-    def test_click_rejects_invalid_locate(self) -> None:
+    def test_if_and_loop_compare_bool_and_string_equally(self) -> None:
         adb = FakeAdb()
         engine = AutomationEngine(
             adb,
             Path("screenshots"),
             sleep_function=lambda _seconds: None,
         )
-        with self.assertRaisesRegex(ActionError, "locate 必须是 ui/ocr/coordinate"):
-            engine._execute(
-                Action(
-                    "click",
-                    {
-                        "locate": "bad",
-                        "text": "领取",
-                        "timeout_seconds": 0.1,
-                    },
-                )
+        # detect 写入字符串上下文："true" 与布尔 true 应有相同分支结果。
+        engine._context["state"] = "true"
+        engine._execute(
+            Action(
+                "if",
+                {
+                    "var": "state",
+                    "equals": True,
+                    "then": [coord_click(1, 2)],
+                    "else": [coord_click(3, 4)],
+                },
             )
-        self.assertEqual(adb.taps, [])
+        )
+        self.assertEqual(adb.taps, [(1, 2)])
+        adb.taps.clear()
+
+        # 数字上下文与引号数字写法匹配。
+        engine._context["count"] = 3
+        engine._execute(
+            Action(
+                "if",
+                {
+                    "var": "count",
+                    "equals": "3",
+                    "then": [coord_click(5, 6)],
+                    "else": [coord_click(7, 8)],
+                },
+            )
+        )
+        self.assertEqual(adb.taps, [(5, 6)])
+        adb.taps.clear()
+
+        # loop_until：字符串 "true" 上下文能命中布尔 true 的写法。
+        engine._context["flag"] = "true"
+        engine._execute(
+            Action(
+                "loop_until",
+                {
+                    "var": "flag",
+                    "equals": True,
+                    "max_iterations": 1,
+                    "steps": [{"type": "wait", "seconds": 0}],
+                },
+            )
+        )
+
+    def test_schema_rejects_invalid_click_locate_and_bare_string_text(self) -> None:
+        errors = validate_action_params("click", {"locate": "bad", "texts": ["领取"]})
+        self.assertTrue(
+            any("locate 必须是 ui/ocr/coordinate" in error for error in errors)
+        )
+        errors = validate_action_params("click", {"locate": "ui", "text": "领取"})
+        self.assertTrue(any("目标文本（texts）为必填项" in error for error in errors))
+        self.assertTrue(any("click 不支持参数" in error for error in errors))
 
     def test_run_nested_steps_reports_invalid_action_dict(self) -> None:
         engine = AutomationEngine(FakeAdb(), Path("screenshots"))
@@ -1392,7 +1722,7 @@ class EngineTests(unittest.TestCase):
                     "var": "state",
                     "equals": "false",
                     "max_iterations": 3,
-                    "steps": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
+                    "steps": [coord_click(1, 2)],
                 },
             )
         )
@@ -1415,7 +1745,10 @@ class EngineTests(unittest.TestCase):
         engine._execute(Action("stop"))
         self.assertEqual(adb.stopped, ["demo.package"])
 
-        with self.assertRaisesRegex(ActionError, "wait_seconds"):
+        errors = validate_action_params("launch", {"wait_seconds": "bad"})
+        self.assertTrue(any("wait_seconds" in error for error in errors))
+        # 绕过加载校验直接喂给引擎：非数值字符串按 ValueError 冒泡，不再静默回退默认值。
+        with self.assertRaises(ValueError):
             engine._execute(Action("launch", {"wait_seconds": "bad"}))
 
     def test_log_screen_info_rejects_wrong_resolution(self) -> None:
@@ -1467,7 +1800,7 @@ class EngineTests(unittest.TestCase):
                 adb,
                 Path(directory),
                 sleep_function=lambda _seconds: None,
-                screenshot_save_level="none",
+                screenshots_enabled=False,
                 ocr_boxes_client=lambda _image: [
                     ("领取", [(100, 200), (300, 200), (300, 300), (100, 300)])
                 ],
@@ -1522,7 +1855,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_save_level="none",
+                    screenshots_enabled=False,
                     ocr_boxes_client=stateful_ocr,
                 ).run(task)
 
@@ -1641,7 +1974,7 @@ class EngineTests(unittest.TestCase):
                     adb,
                     Path(directory),
                     sleep_function=advance_clock,
-                    screenshot_save_level="none",
+                    screenshots_enabled=False,
                     ocr_boxes_client=ocr,
                 )
                 for task in tasks:

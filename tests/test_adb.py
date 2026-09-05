@@ -25,24 +25,7 @@ class DumpStub(AdbClient):
 
     def shell(self, *arguments: str, check: bool = True) -> str:
         self.calls.append((arguments, check))
-        return "UI hierchary dumped to: /sdcard/free_window_dump.xml"
-
-    def exec_out(self, *arguments: str) -> str:
-        self.calls.append((arguments, True))
         return '<hierarchy><node text="我的" /></hierarchy>'
-
-
-class FailedDumpStub(AdbClient):
-    def __init__(self) -> None:
-        super().__init__(Path("C:/adb.exe"))
-
-    def shell(self, *arguments: str, check: bool = True) -> str:
-        if arguments[:2] == ("uiautomator", "dump"):
-            raise AdbError("ADB 命令失败: ERROR: could not get idle state.")
-        return ""
-
-    def exec_out(self, *arguments: str) -> str:
-        raise AdbError("ADB 命令失败: cat: No such file or directory")
 
 
 class ScreenInfoStub(AdbClient):
@@ -118,12 +101,14 @@ class AdbTests(unittest.TestCase):
                 with self.assertRaisesRegex(AdbError, "permission denied"):
                     adb._run(["devices"])
 
-            with patch(
-                "free_app.adb.subprocess.run",
-                side_effect=subprocess.TimeoutExpired([str(executable)], 1),
+            with (
+                patch(
+                    "free_app.adb.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired([str(executable)], 1),
+                ),
+                self.assertRaisesRegex(AdbError, "ADB"),
             ):
-                with self.assertRaisesRegex(AdbError, "ADB"):
-                    adb._run(["devices"])
+                adb._run(["devices"])
 
     def test_screenshot_builds_exec_out_command_and_returns_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -158,15 +143,29 @@ class AdbTests(unittest.TestCase):
             with self.assertRaisesRegex(AdbError, "size"):
                 adb.screen_info()
 
-    def test_dump_ui_accepts_mumu_exit_code_when_xml_is_readable(self) -> None:
+    def test_dump_ui_runs_single_shell_script_and_reads_xml(self) -> None:
         adb = DumpStub()
         xml = adb.dump_ui()
         self.assertIn("<hierarchy>", xml)
-        self.assertEqual(adb.calls[1], (("uiautomator", "dump", "/sdcard/free_window_dump.xml"), True))
+        self.assertEqual(len(adb.calls), 1)
+        arguments, check = adb.calls[0]
+        self.assertEqual(arguments[:2], ("sh", "-c"))
+        script = arguments[2]
+        self.assertIn("rm -f", script)
+        self.assertIn("uiautomator dump", script)
+        self.assertIn("cat ", script)
+        self.assertFalse(check)
 
-    def test_dump_ui_surfaces_uiautomator_failure_when_xml_is_missing(self) -> None:
-        with self.assertRaisesRegex(AdbError, "could not get idle state"):
-            FailedDumpStub().dump_ui()
+    def test_dump_ui_rejects_missing_hierarchy(self) -> None:
+        class EmptyDumpStub(AdbClient):
+            def __init__(self) -> None:
+                super().__init__(Path("C:/adb.exe"))
+
+            def shell(self, *arguments: str, check: bool = True) -> str:
+                return "not xml"
+
+        with self.assertRaisesRegex(AdbError, "hierarchy"):
+            EmptyDumpStub().dump_ui()
 
     def test_device_list_parses_ready_and_offline_states(self) -> None:
         adb = StubAdb(
@@ -175,10 +174,13 @@ class AdbTests(unittest.TestCase):
             "emulator-5558 device product:test model:test device:test transport_id:2\n"
         )
         devices = adb.list_devices()
-        self.assertEqual([(device.serial, device.state) for device in devices], [
-            ("emulator-5556", "offline"),
-            ("emulator-5558", "device"),
-        ])
+        self.assertEqual(
+            [(device.serial, device.state) for device in devices],
+            [
+                ("emulator-5556", "offline"),
+                ("emulator-5558", "device"),
+            ],
+        )
 
     def test_select_device_requires_an_explicit_target(self) -> None:
         adb = StubAdb(
@@ -188,7 +190,9 @@ class AdbTests(unittest.TestCase):
         with self.assertRaisesRegex(AdbError, "目标 ADB serial"):
             adb.select_device()
 
-    def test_missing_preferred_device_fails_even_when_other_devices_are_ready(self) -> None:
+    def test_missing_preferred_device_fails_even_when_other_devices_are_ready(
+        self,
+    ) -> None:
         adb = StubAdb(
             "List of devices attached\n"
             "emulator-5558 device product:test model:test device:test transport_id:2\n"
@@ -235,7 +239,14 @@ class AdbTests(unittest.TestCase):
 
         self.assertEqual(
             adb.calls[0],
-            ("monkey", "-p", "tv.danmaku.bili", "-c", "android.intent.category.LAUNCHER", "1"),
+            (
+                "monkey",
+                "-p",
+                "tv.danmaku.bili",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ),
         )
 
     def test_preview_truncates_and_compacts_whitespace(self) -> None:
@@ -258,11 +269,7 @@ class AdbTests(unittest.TestCase):
             adb._run(["devices"])
 
     def test_list_devices_ignores_malformed_lines(self) -> None:
-        adb = StubAdb(
-            "List of devices attached\n"
-            "only-one-field\n"
-            "something unknown\n"
-        )
+        adb = StubAdb("List of devices attached\nonly-one-field\nsomething unknown\n")
 
         self.assertEqual(adb.list_devices(), [])
 
@@ -337,12 +344,14 @@ class AdbTests(unittest.TestCase):
             executable.write_bytes(b"")
             adb = AdbClient(executable, serial="emulator-5556")
 
-            with patch(
-                "free_app.adb.subprocess.run",
-                side_effect=subprocess.TimeoutExpired([str(executable)], 1),
+            with (
+                patch(
+                    "free_app.adb.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired([str(executable)], 1),
+                ),
+                self.assertRaisesRegex(AdbError, "截图命令超时"),
             ):
-                with self.assertRaisesRegex(AdbError, "截图命令超时"):
-                    adb.screenshot()
+                adb.screenshot()
 
             failed = subprocess.CompletedProcess(
                 [str(executable)],
@@ -353,28 +362,6 @@ class AdbTests(unittest.TestCase):
             with patch("free_app.adb.subprocess.run", return_value=failed):
                 with self.assertRaisesRegex(AdbError, "device offline"):
                     adb.screenshot()
-
-    def test_dump_ui_rejects_missing_hierarchy(self) -> None:
-        class EmptyDumpStub(DumpStub):
-            def exec_out(self, *arguments: str) -> str:
-                return "not xml"
-
-        with self.assertRaisesRegex(AdbError, "hierarchy"):
-            EmptyDumpStub().dump_ui()
-
-    def test_dump_ui_surfaces_exec_out_failure_without_dump_error(self) -> None:
-        class ReadFailureStub(AdbClient):
-            def __init__(self) -> None:
-                super().__init__(Path("C:/adb.exe"))
-
-            def shell(self, *arguments: str, check: bool = True) -> str:
-                return ""
-
-            def exec_out(self, *arguments: str) -> str:
-                raise AdbError("cat failed")
-
-        with self.assertRaisesRegex(AdbError, "cat failed"):
-            ReadFailureStub().dump_ui()
 
     def test_current_package_returns_none_when_no_marker_matches(self) -> None:
         adb = StubAdb("no useful line\n")

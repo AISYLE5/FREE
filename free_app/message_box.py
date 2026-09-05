@@ -1,4 +1,4 @@
-"""Chinese, consistently styled message boxes for the desktop UI."""
+"""为桌面 UI 提供风格统一的中文化消息框。"""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from . import styles as _s
 
 
 class QMessageBox(_QtMessageBox):
-    """QMessageBox with Chinese standard-button labels.
+    """带中文标准按钮文案的 QMessageBox。
 
-    The class keeps Qt's public API so existing callers and tests can still
-    use ``QMessageBox.warning`` / ``information``.
+    类保持 Qt 的公共 API 不变，现有调用方与测试仍可使用
+    ``QMessageBox.warning`` / ``information``。
     """
 
     _BUTTON_LABELS = {
@@ -79,3 +79,33 @@ class QMessageBox(_QtMessageBox):
         return QMessageBox._show_standard(
             parent, title, text, _QtMessageBox.Icon.Information, buttons, default_button
         )
+
+
+def confirm(
+    parent: Any,
+    title: str,
+    text: str,
+    *,
+    confirm_label: str = "确认",
+    cancel_label: str = "取消",
+) -> bool:
+    """阻塞式确认/取消提示，按钮文案统一为中文。
+
+    结果通过 ``clickedButton()`` 按对象身份比较得出，而非旧实现
+    使用的 ``buttons()`` 位置索引。
+    """
+
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    cancel_button = box.addButton(cancel_label, _QtMessageBox.ButtonRole.AcceptRole)
+    confirm_button = box.addButton(
+        confirm_label, _QtMessageBox.ButtonRole.DestructiveRole
+    )
+    cancel_button.setObjectName("messageBoxAction")
+    confirm_button.setObjectName("messageBoxAction")
+    confirm_button.setDefault(True)
+    box.setEscapeButton(cancel_button)
+    box.setStyleSheet(_s.MESSAGE_BOX_QSS)
+    box.exec()
+    return box.clickedButton() == confirm_button

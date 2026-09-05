@@ -3,65 +3,71 @@ from __future__ import annotations
 import json
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from threading import Event
-from typing import Any, Callable
+from typing import Any
 from xml.etree.ElementTree import ParseError
 
-from PySide6.QtGui import QImage
-
-from .adb import AdbClient, AdbError
-from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_SIZE, SCREEN_WIDTH
 from .action_schema import (
     COMPOUND_TYPE,
-    PRIMITIVE_TYPES,
+    PRIMITIVE_TYPE_SET,
     describe_action,
     effective_parameters,
 )
+from .adb import AdbClient, AdbError
+from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
 from .helpers import (
     LogCallback,
     OcrBoxCallback,
     OcrCallback,
     ProgressCallback,
     clamp_coord,
-    string_list,
 )
 from .models import Action, RunResult, RunStatus, TaskDefinition
 from .ui_automation import UiSnapshot, text_matches
 
+
 class StopRequested(RuntimeError):
     pass
+
 
 class ActionError(RuntimeError):
     pass
 
-SCREENSHOT_SAVE_LEVELS = ("none", "key", "all")
 
 class AutomationEngine:
+    """按任务定义驱动 ADB/OCR 执行动作。
+
+    信任边界：所有动作参数在进入引擎前都已经被 ``action_schema.validate_action_params``
+    校验（任务加载、试运行、编辑器保存均走这条路径），执行期由 :meth:`_execute`
+    统一套用 ``effective_parameters`` 填充默认值；处理器直接读取参数，不再做
+    类型宽容或第二套默认值。
+    """
+
     def __init__(
         self,
         adb: AdbClient,
         screenshot_directory: Path,
         log_callback: LogCallback | None = None,
-        poll_interval: float = 0.5,
         sleep_function: Callable[[float], None] = time.sleep,
         ocr_client: OcrCallback | None = None,
         ocr_boxes_client: OcrBoxCallback | None = None,
-        screenshot_save_level: str = "all",
+        screenshots_enabled: bool = True,
         progress_callback: ProgressCallback | None = None,
+        log_foreground_package: bool = False,
     ):
         self.adb = adb
         self.screenshot_directory = Path(screenshot_directory)
         self.log_callback = log_callback or (lambda _message: None)
-        self.poll_interval = poll_interval
         self.sleep_function = sleep_function
         self.ocr_client = ocr_client
         self.ocr_boxes_client = ocr_boxes_client
-        if screenshot_save_level not in SCREENSHOT_SAVE_LEVELS:
-            screenshot_save_level = "all"
-        self.screenshot_save_level = screenshot_save_level
+        self.screenshots_enabled = bool(screenshots_enabled)
         self.progress_callback = progress_callback
+        # 记录前台包名每步要额外跑 2-4 次 dumpsys 子进程，默认关闭。
+        self.log_foreground_package = bool(log_foreground_package)
         self._run_stamp = ""
         self._stop_event = Event()
         self._current_task: TaskDefinition | None = None
@@ -106,14 +112,16 @@ class AutomationEngine:
                 if action.type in {"stop", "launch"} and task.package:
                     display_params.setdefault("package", task.package)
                 self._log(f"动作参数: {self._format_parameters(display_params)}")
-                self._log_current_package("动作前台")
-                self._capture_checkpoint(task.id, index, "before")
+                if self.log_foreground_package:
+                    self._log_current_package("动作前台")
                 self._run_with_retries(action)
                 completed = index
                 elapsed = time.monotonic() - started
-                self._log(f"[{index}/{total}] 完成: {current_action}，耗时 {elapsed:.2f}s")
-                self._log_current_package("动作完成前台")
-                self._capture_checkpoint(task.id, index, "after")
+                self._log(
+                    f"[{index}/{total}] 完成: {current_action}，耗时 {elapsed:.2f}s"
+                )
+                if self.log_foreground_package:
+                    self._log_current_package("动作完成前台")
             self._log(f"任务完成: {task.name}")
             total_elapsed = time.monotonic() - run_started
             self._log(
@@ -152,7 +160,9 @@ class AutomationEngine:
                 f"step={current_action}, elapsed={total_elapsed:.2f}s, "
                 f"exception={type(exc).__name__}, error={message}"
             )
-            trace = traceback.format_exc().strip().replace("\r", "").replace("\n", "\\n")
+            trace = (
+                traceback.format_exc().strip().replace("\r", "").replace("\n", "\\n")
+            )
             self._log(f"异常追踪: {trace}")
             if screenshot:
                 self._log(f"失败截图: {screenshot}")
@@ -208,13 +218,17 @@ class AutomationEngine:
                     self._sleep(1.0)
                 else:
                     self._log(f"动作最终失败: {exc}")
-        raise ActionError(str(last_error or "动作失败"))
+        if last_error is None:
+            raise ActionError("动作失败")
+        raise ActionError(str(last_error)) from last_error
 
     def _execute(self, action: Action) -> None:
-        handler = getattr(self, _ACTION_HANDLERS.get(action.type, ""), None)
+        handler = _ACTION_HANDLERS.get(action.type)
         if handler is None:
             raise ActionError(f"不支持的动作类型: {action.type}")
-        handler(action.parameters)
+        # 参数默认值的唯一来源是 action_schema 的 ParamSpec；引擎在此统一
+        # 填充，处理器只读取已解析的参数，不再各自维护第二套默认值。
+        handler(self, effective_parameters(action.type, action.parameters))
 
     def _execute_stop(self, params: dict[str, Any]) -> None:
         package = self._lifecycle_package(params)
@@ -223,9 +237,9 @@ class AutomationEngine:
 
     def _execute_launch(self, params: dict[str, Any]) -> None:
         package = self._lifecycle_package(params)
-        wait_seconds = self._lifecycle_wait_seconds(params)
+        wait_seconds = float(params["wait_seconds"])
         self._log(f"ADB launch: package={package}, 等待 {wait_seconds:.1f}s")
-        attempts = max(1, int(params.get("launch_attempts", 3)))
+        attempts = max(1, int(params["launch_attempts"]))
         current = ""
         for attempt in range(1, attempts + 1):
             self._log(f"启动尝试 {attempt}/{attempts}: {package}")
@@ -234,16 +248,19 @@ class AutomationEngine:
             try:
                 current = self.adb.current_package() or ""
             except Exception as exc:
+                # 前台探测失败视为启动完成（部分 ADB 环境不支持探测）。
                 self._log(f"启动后前台读取失败: {exc}")
                 return
             if current == package:
                 return
             if attempt < attempts:
                 self._log(f"启动后前台为 {current or '未知'}，将重试")
-        self._log(f"警告: 启动 {attempts} 次后前台仍为 {current or '未知'}，继续后续动作")
+        self._log(
+            f"警告: 启动 {attempts} 次后前台仍为 {current or '未知'}，继续后续动作"
+        )
 
     def _execute_wait(self, params: dict[str, Any]) -> None:
-        seconds = float(params.get("seconds", 1))
+        seconds = float(params["seconds"])
         self._log(f"等待页面稳定: {seconds:.1f}s")
         self._sleep(seconds)
 
@@ -255,113 +272,84 @@ class AutomationEngine:
     def _execute_swipe(self, params: dict[str, Any]) -> None:
         x1, y1 = int(params["x1"]), int(params["y1"])
         x2, y2 = int(params["x2"]), int(params["y2"])
-        duration_ms = int(params.get("duration_ms", 300))
+        duration_ms = int(params["duration_ms"])
         if duration_ms < 0:
             raise ActionError("swipe duration_ms must be non-negative")
         self._log(f"ADB swipe: ({x1},{y1}) -> ({x2},{y2}), duration={duration_ms}ms")
         self._check_stop()
         self.adb.swipe(x1, y1, x2, y2, duration_ms)
 
+    def _execute_swipe_until(self, params: dict[str, Any]) -> None:
+        result_var = str(params["result_var"])
+        max_iterations = max(1, int(params["max_iterations"]))
+        if self._swipe_until_detected(params, result_var):
+            self._log("滑动直到: 初始已满足，无需滑动")
+            return
+        for index in range(1, max_iterations + 1):
+            self._check_stop()
+            self._log(f"滑动直到 第 {index}/{max_iterations} 次")
+            self._execute_swipe(params)
+            if self._swipe_until_detected(params, result_var):
+                self._log("滑动直到: 已检测到目标，结束")
+                return
+        raise ActionError(
+            f"滑动直到超过最大次数 {max_iterations}: {result_var}_found 仍未为 true"
+        )
+
+    def _swipe_until_detected(self, params: dict[str, Any], result_var: str) -> bool:
+        # swipe_until 与 detect 的定位/轮询参数同名，已解析的参数可直接传给 _detect。
+        self._detect(params)
+        return bool(self._context.get(f"{result_var}_found"))
+
     def _execute_capture_screenshot(self, params: dict[str, Any]) -> None:
         label = "screenshot"
-        if self.screenshot_save_level in {"key", "all"}:
-            task_id = self._current_task.id if self._current_task is not None else "unknown"
+        if self.screenshots_enabled:
+            task_id = (
+                self._current_task.id if self._current_task is not None else "unknown"
+            )
             self._capture_key_screenshot(task_id, label)
         else:
-            self._log(
-                f"截图动作跳过: {label}（当前 screenshot_save_level={self.screenshot_save_level}）"
-            )
+            self._log(f"截图动作跳过: {label}（截图已禁用）")
 
     def _detect(self, params: dict[str, Any]) -> None:
-        """Detect OCR/UI state and optionally store text, count and coordinates."""
+        """检测 OCR/UI 状态，把命中的文本、数量与坐标写入运行上下文。"""
 
-        locate = str(params.get("locate", "ocr"))
-        if locate not in {"ocr", "ui"}:
-            raise ActionError(f"不支持的检测来源: {locate}")
+        locate = str(params["locate"])
         target = str(params.get("target", "text"))
         result_var = self._required_string(params, "result_var")
         coord_key = f"{result_var}_coord"
         count_key = f"{result_var}_count"
-        timeout = max(0, float(params.get("timeout_seconds", 30)))
-        interval = max(0.1, float(params.get("interval_seconds", 1)))
-        continue_on_timeout = bool(params.get("continue_on_timeout", False))
-        match_mode = self._text_match_mode(params.get("match_mode", "exact"))
-        targets = self._string_values(params.get("texts", []))
+        timeout = max(0.0, float(params["timeout_seconds"]))
+        interval = max(0.1, float(params["interval_seconds"]))
+        continue_on_timeout = bool(params["continue_on_timeout"])
+        match_mode = str(params.get("match_mode", "exact"))
+        targets: list[str] = list(params.get("texts", []))
         if locate == "ui" and target == "resource_id":
             resource_id = self._required_string(params, "resource_id")
-        elif not targets:
-            raise ActionError("detect 缺少 texts")
+        else:
+            resource_id = ""
 
-        deadline = time.monotonic() + timeout
-        last_error = ""
-        while time.monotonic() < deadline:
-            self._check_stop()
-            matched: str | None = None
-            coord: tuple[int, int] | None = None
-            count = 0
-            try:
-                if locate == "ocr":
-                    recognized_boxes = self._ocr_boxes()
-                    recognized = [text for text, _points in recognized_boxes]
-                    self._log(f"detect OCR 候选: {recognized}")
-                    matched, count = self._match_texts_in_order(
-                        recognized, targets, match_mode
-                    )
-                    if matched is not None:
-                        if coord_key:
-                            point = self._ocr_box_center(
-                                recognized_boxes, matched, match_mode
-                            )
-                            if point is not None:
-                                coord = point
-                elif target == "resource_id":
-                    snapshot = self._snapshot()
-                    node = snapshot.find_resource_id(resource_id)
-                    count = snapshot.count_resource_matches(resource_id)
-                    if node:
-                        matched = resource_id
-                        if coord_key:
-                            if node.bounds:
-                                coord = node.bounds.center
-                else:
-                    snapshot = self._snapshot()
-                    for value in targets:
-                        node = snapshot.find_text(value, match_mode=match_mode)
-                        if node:
-                            matched = value
-                            if coord_key:
-                                if node.bounds:
-                                    coord = node.bounds.center
-                            break
-                    count = snapshot.count_text_matches(targets, match_mode=match_mode)
-            except StopRequested:
-                raise
-            except Exception as exc:
-                if str(exc) != last_error:
-                    self._log(f"detect 检测失败，继续重试: {exc}")
-                    last_error = str(exc)
-                self._sleep(interval)
-                continue
+        def probe() -> bool:
+            matched, coord, count = self._locate_target(
+                locate, target, resource_id, targets, match_mode
+            )
+            if matched is None:
+                return False
+            self._write_detect_result(result_var, matched, True, coord, count)
+            self._log(
+                f"detect 命中: locate={locate}, target={target}, "
+                f"result={matched}, result_var={result_var}, "
+                f"coord={coord_key}, count={count_key}"
+            )
+            return True
 
-            if matched is not None:
-                self._write_detect_result(
-                    result_var, matched, True, coord, count, coord_key, count_key
-                )
-                self._log(
-                    f"detect 命中: locate={locate}, target={target}, "
-                    f"result={matched}, result_var={result_var}, "
-                    f"coord={coord_key or '无'}, count={count_key or '无'}"
-                )
-                return
-            self._sleep(interval)
+        if self._poll_until(timeout, interval, probe, "detect"):
+            return
 
         if continue_on_timeout:
-            self._write_detect_result(
-                result_var, "", False, None, 0, coord_key, count_key
-            )
+            self._write_detect_result(result_var, "", False, None, 0)
             self._log(
-                f"detect 超时，写入 none: result_var={result_var}, "
-                f"count={count_key or '无'}"
+                f"detect 超时，写入 none: result_var={result_var}, count={count_key}"
             )
             return
         source = "OCR" if locate == "ocr" else "UI"
@@ -369,24 +357,57 @@ class AutomationEngine:
             f"{source} 检测超时: targets={targets}, result_var={result_var}"
         )
 
+    def _locate_target(
+        self,
+        locate: str,
+        target: str,
+        resource_id: str,
+        targets: list[str],
+        match_mode: str,
+    ) -> tuple[str | None, tuple[int, int] | None, int]:
+        """单次定位尝试：返回 (首个命中的目标, 坐标, 匹配数)。"""
+
+        if locate == "ocr":
+            recognized_boxes = self._ocr_boxes()
+            recognized = [text for text, _points in recognized_boxes]
+            self._log(f"detect OCR 候选: {recognized}")
+            matched, count = self._match_texts_in_order(recognized, targets, match_mode)
+            if matched is None:
+                return None, None, count
+            return (
+                matched,
+                self._ocr_box_center(recognized_boxes, matched, match_mode),
+                count,
+            )
+        snapshot = self._snapshot()
+        if target == "resource_id":
+            node = snapshot.find_resource_id(resource_id)
+            count = snapshot.count_resource_matches(resource_id)
+            if node:
+                return (
+                    resource_id,
+                    node.bounds.center if node.bounds else None,
+                    count,
+                )
+            return None, None, count
+        for value in targets:
+            node = snapshot.find_text(value, match_mode=match_mode)
+            if node:
+                return (
+                    value,
+                    node.bounds.center if node.bounds else None,
+                    snapshot.count_text_matches(targets, match_mode=match_mode),
+                )
+        return None, None, snapshot.count_text_matches(targets, match_mode=match_mode)
+
     def _if(self, params: dict[str, Any]) -> None:
-        """Run one branch of nested actions based on a context value."""
+        """根据上下文变量是否等于 ``equals``，执行 ``then`` 或 ``else`` 分支动作。"""
 
         var = self._required_string(params, "var")
         current = self._context.get(var)
-        equals = params.get("equals")
-        if isinstance(equals, bool):
-            condition_met = isinstance(current, bool) and current == equals
-            condition_text = f"{current!r} == {equals!r}"
-        elif isinstance(equals, str) and equals.strip():
-            expected = equals.strip()
-            if expected.lower() in {"true", "false"} and isinstance(current, bool):
-                condition_met = current == (expected.lower() == "true")
-            else:
-                condition_met = current == expected
-            condition_text = f"{current!r} == {expected!r}"
-        else:
-            raise ActionError("if 缺少有效的 equals")
+        equals = params["equals"]
+        condition_met = self._comparable(current) == self._comparable(equals)
+        condition_text = f"{current!r} == {equals!r}"
         branch_key = "then" if condition_met else "else"
         branch = params.get(branch_key, [])
         self._log(f"if 分支: {var}, {condition_text}, 执行 {branch_key}")
@@ -400,73 +421,108 @@ class AutomationEngine:
         self.adb.tap(x, y)
 
     def _click(self, params: dict[str, Any]) -> None:
-        locate = str(params.get("locate", "ui"))
-        if locate not in {"ui", "ocr", "coordinate"}:
-            raise ActionError(f"click 的 locate 必须是 ui/ocr/coordinate 之一: {locate}")
-        target = str(params.get("target", "text"))
-        timeout = max(0, float(params.get("timeout_seconds", 15)))
-        interval = max(0.1, float(params.get("interval_seconds", 0.5)))
-        match_mode = self._text_match_mode(params.get("match_mode", "exact"))
-        skip_values = self._string_values(params.get("skip_if_texts", []))
-        deadline = time.monotonic() + timeout
-        last_error = ""
+        locate = str(params["locate"])
         if locate == "coordinate":
+            # coordinate 点击无轮询语义，规格里也不含 timeout/interval 参数。
             self._tap(params)
             return
-        while time.monotonic() < deadline:
-            self._check_stop()
-            try:
-                if locate == "ocr":
-                    boxes = self._ocr_boxes()
-                    recognized = [text for text, _points in boxes]
-                    if skip_values and any(
-                        text_matches(text, skip_text, match_mode)
-                        for skip_text in skip_values
-                        for text in recognized
-                    ):
-                        self._log(f"点击前检测到跳过状态: {skip_values}")
-                        return
-                    value = self._required_string(params, "text")
+        target = str(params.get("target", "text"))
+        timeout = max(0.0, float(params["timeout_seconds"]))
+        interval = max(0.1, float(params["interval_seconds"]))
+        match_mode = str(params.get("match_mode", "exact"))
+        skip_values: list[str] = list(params.get("skip_if_texts") or [])
+        values: list[str] = list(params.get("texts", []))
+        if locate != "ocr" and target == "resource_id":
+            resource_id = self._required_string(params, "resource_id")
+        else:
+            resource_id = ""
+
+        def probe() -> bool:
+            if locate == "ocr":
+                boxes = self._ocr_boxes()
+                recognized = [text for text, _points in boxes]
+                if self._skip_requested(recognized, skip_values, match_mode):
+                    return True
+                for value in values:
                     point = self._ocr_box_center(boxes, value, match_mode)
                     if point is not None:
                         x, y = point
                         self._log(f"OCR 点击文本: {value} ({x}, {y})")
                         self.adb.tap(x, y)
-                        return
-                else:
-                    snapshot = self._snapshot()
-                    if skip_values and snapshot.find_any(
-                        skip_values, match_mode=match_mode
-                    ):
-                        self._log(f"点击前检测到跳过状态: {skip_values}")
-                        return
-                    if target == "resource_id":
-                        node = snapshot.find_resource_id(
-                            self._required_string(params, "resource_id")
-                        )
-                        label = str(params.get("resource_id", ""))
-                    else:
-                        value = self._required_string(params, "text")
-                        node = snapshot.find_text(value, match_mode=match_mode)
-                        label = value
-                    if node is not None:
-                        if not node.enabled:
-                            raise ActionError(f"目标控件已禁用: {label}")
-                        if not node.bounds:
-                            raise ActionError(f"目标控件没有可点击区域: {label}")
-                        x, y = node.bounds.center
-                        self._log(f"点击: {label} ({x}, {y})")
-                        self.adb.tap(x, y)
-                        return
+                        return True
+                return False
+            snapshot = self._snapshot()
+            if skip_values and snapshot.find_any(skip_values, match_mode=match_mode):
+                self._log(f"点击前检测到跳过状态: {skip_values}")
+                return True
+            candidates: list[tuple[str, Any]] = []
+            if target == "resource_id":
+                candidates.append((resource_id, snapshot.find_resource_id(resource_id)))
+            else:
+                candidates.extend(
+                    (value, snapshot.find_text(value, match_mode=match_mode))
+                    for value in values
+                )
+            for label, node in candidates:
+                if node is None:
+                    continue
+                if not node.enabled:
+                    raise ActionError(f"目标控件已禁用: {label}")
+                if not node.bounds:
+                    raise ActionError(f"目标控件没有可点击区域: {label}")
+                x, y = node.bounds.center
+                self._log(f"点击: {label} ({x}, {y})")
+                self.adb.tap(x, y)
+                return True
+            return False
+
+        if not self._poll_until(timeout, interval, probe, "click"):
+            source = "OCR" if locate == "ocr" else "UI"
+            raise ActionError(f"{source} 未找到可点击目标: {params}")
+
+    def _skip_requested(
+        self, recognized: list[str], skip_values: list[str], match_mode: str
+    ) -> bool:
+        """OCR 文本中是否出现任一跳过标记；命中时记录日志。"""
+
+        if not skip_values:
+            return False
+        if any(
+            text_matches(text, skip_text, match_mode)
+            for skip_text in skip_values
+            for text in recognized
+        ):
+            self._log(f"点击前检测到跳过状态: {skip_values}")
+            return True
+        return False
+
+    def _poll_until(
+        self,
+        timeout: float,
+        interval: float,
+        probe: Callable[[], bool],
+        label: str,
+    ) -> bool:
+        """按 ``interval`` 轮询 ``probe`` 直到命中或超时。
+
+        probe 抛出的异常按内容去重记录后继续重试；返回 False 表示超时。
+        """
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        last_error = ""
+        while time.monotonic() < deadline:
+            self._check_stop()
+            try:
+                if probe():
+                    return True
             except StopRequested:
                 raise
             except Exception as exc:
                 if str(exc) != last_error:
-                    self._log(f"click 检测失败，继续重试: {exc}")
+                    self._log(f"{label} 检测失败，继续重试: {exc}")
                     last_error = str(exc)
             self._sleep(interval)
-        source = "OCR" if locate == "ocr" else "UI"
-        raise ActionError(f"{source} 未找到可点击目标: {params}")
+        return False
 
     def _run_nested_steps(self, steps: Any, label: str) -> None:
         if not isinstance(steps, list):
@@ -489,19 +545,13 @@ class AutomationEngine:
 
     def _loop_until(self, params: dict[str, Any]) -> None:
         var = self._required_string(params, "var")
-        raw_equals = params.get("equals")
-        if isinstance(raw_equals, bool):
-            expected: bool | str = raw_equals
-        elif isinstance(raw_equals, str) and raw_equals.strip().lower() in {"true", "false"}:
-            expected = raw_equals.strip().lower() == "true"
-        else:
-            expected = self._required_string(params, "equals")
-        max_iterations = max(1, int(params.get("max_iterations", 1)))
+        expected = self._comparable(params["equals"])
+        max_iterations = max(1, int(params["max_iterations"]))
         steps = params.get("steps", [])
         for index in range(1, max_iterations + 1):
             self._check_stop()
             current = self._context.get(var)
-            if current == expected:
+            if self._comparable(current) == expected:
                 self._log(
                     f"loop_until 条件满足，结束: {var}={current!r} == {expected!r}"
                 )
@@ -509,7 +559,7 @@ class AutomationEngine:
             self._log(f"loop_until 第 {index}/{max_iterations} 次")
             self._run_nested_steps(steps, f"loop_until[{index}]")
             current = self._context.get(var)
-            if current == expected:
+            if self._comparable(current) == expected:
                 self._log(
                     f"loop_until 条件满足，结束: {var}={current!r} == {expected!r}"
                 )
@@ -519,44 +569,46 @@ class AutomationEngine:
         )
 
     @staticmethod
-    def _string_values(value: Any) -> list[str]:
-        return string_list(value)
+    def _comparable(value: Any) -> str:
+        """归一化上下文或 ``equals`` 的取值，使 bool/int/float/str 能合理比较。
+
+        ``True``/``False`` 转成 "true"/"false"，整数值保持普通形式，其余值
+        转为去首尾空白的字符串，因此 ``equals: "true"`` 与 ``equals: true``
+        行为一致，``equals: "3"`` 也能匹配上下文里的整数 3。
+        """
+
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            return str(value)
+        return str(value).strip()
 
     @staticmethod
     def _clamp(x: int, y: int) -> tuple[int, int]:
         return clamp_coord(x, y, SCREEN_WIDTH, SCREEN_HEIGHT)
 
     @staticmethod
-    def _text_match_mode(value: Any) -> str:
-        match_mode = str(value or "exact")
-        if match_mode not in {"exact", "fuzzy"}:
-            raise ActionError(f"不支持的文本匹配方式: {match_mode}")
-        return match_mode
-
-    @staticmethod
     def _match_texts_in_order(
         recognized: list[str], targets: list[str], match_mode: str
     ) -> tuple[str | None, int]:
-        """Return (first target matching any recognized text, count of matches).
+        """返回 (首个命中任一识别文本的目标, 匹配数)。
 
-        ``count`` is the number of recognized texts that match any target; each
-        recognized text is counted at most once.
+        ``count`` 是命中任一目标的识别文本条数；每条识别文本至多计一次。
         """
 
-        matched: str | None = None
         matched_index = len(targets)
         count = 0
         for text in recognized:
             hit = False
             for index, value in enumerate(targets):
                 if text_matches(text, value, match_mode):
-                    if index < matched_index:
-                        matched_index = index
+                    matched_index = min(matched_index, index)
                     hit = True
             if hit:
                 count += 1
-        if matched_index < len(targets):
-            matched = targets[matched_index]
+        matched = targets[matched_index] if matched_index < len(targets) else None
         return matched, count
 
     def _write_detect_result(
@@ -566,18 +618,19 @@ class AutomationEngine:
         found: bool,
         coord: tuple[int, int] | None,
         count: int,
-        coord_key: str,
-        count_key: str,
     ) -> None:
+        """把一次 detect 的结果写入运行上下文。"""
+
         self._context[result_var] = matched
         self._context[f"{result_var}_found"] = found
-        if coord_key is not None:
-            self._context[coord_key] = coord
-        if count_key is not None:
-            self._context[count_key] = count
+        self._context[f"{result_var}_coord"] = coord
+        self._context[f"{result_var}_count"] = count
 
     def _ocr_boxes(self) -> list[tuple[str, list[tuple[int, int]]]]:
-        """OCR texts with detection boxes; text-only clients yield empty boxes."""
+        """OCR 识别文本及检测框；纯文本客户端返回空检测框。
+
+        外部 OCR 库的输出不属于本项目校验范围，这里保留唯一的归一化边界。
+        """
 
         if self.ocr_boxes_client is None:
             if self.ocr_client is None:
@@ -598,8 +651,8 @@ class AutomationEngine:
                     if not isinstance(point, (list, tuple)) or len(point) < 2:
                         continue
                     try:
-                        x = int(round(float(point[0])))
-                        y = int(round(float(point[1])))
+                        x = round(float(point[0]))
+                        y = round(float(point[1]))
                     except (TypeError, ValueError):
                         continue
                     x, y = self._clamp(x, y)
@@ -613,14 +666,14 @@ class AutomationEngine:
         target: str,
         match_mode: str,
     ) -> tuple[int, int] | None:
-        """Return the center of the box whose text matches target."""
+        """返回文本与 target 匹配的检测框中心点。"""
 
         for text, points in boxes:
             if not text_matches(text, target, match_mode) or len(points) < 3:
                 continue
             center_x = sum(point[0] for point in points) / len(points)
             center_y = sum(point[1] for point in points) / len(points)
-            x, y = self._clamp(int(round(center_x)), int(round(center_y)))
+            x, y = self._clamp(round(center_x), round(center_y))
             return (x, y)
         return None
 
@@ -646,13 +699,17 @@ class AutomationEngine:
             or node.content_description
         )
         visible = sum(1 for node in recognized_nodes if node.visible)
-        clickable = sum(1 for node in recognized_nodes if node.visible and node.clickable)
+        clickable = sum(
+            1 for node in recognized_nodes if node.visible and node.clickable
+        )
         text_nodes = sum(
             1
             for node in recognized_nodes
             if node.visible and (node.text or node.content_description)
         )
-        resource_nodes = sum(1 for node in recognized_nodes if node.visible and node.resource_id)
+        resource_nodes = sum(
+            1 for node in recognized_nodes if node.visible and node.resource_id
+        )
         self._log(
             "UI hierarchy 识别成功: "
             f"nodes={len(recognized_nodes)}, visible={visible}, clickable={clickable}, "
@@ -675,12 +732,6 @@ class AutomationEngine:
             return self._current_task.package
         return self._required_string(params, "package")
 
-    def _lifecycle_wait_seconds(self, params: dict[str, Any]) -> float:
-        try:
-            return float(params.get("wait_seconds", 3))
-        except (TypeError, ValueError) as exc:
-            raise ActionError("launch 动作缺少有效的 wait_seconds") from exc
-
     def _check_stop(self) -> None:
         if self._stop_event.is_set():
             raise StopRequested()
@@ -694,7 +745,11 @@ class AutomationEngine:
     def _log_screen_info(self) -> None:
         info = self.adb.screen_info()
         self._log(f"设备规格: {info.width}x{info.height}, density={info.density}dpi")
-        if (info.width, info.height, info.density) != (SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_DENSITY):
+        if (info.width, info.height, info.density) != (
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            SCREEN_DENSITY,
+        ):
             raise ActionError(
                 "模拟器规格不符合固定要求: "
                 f"当前={info.width}x{info.height}/{info.density}dpi, "
@@ -711,15 +766,15 @@ class AutomationEngine:
 
     @staticmethod
     def _format_parameters(parameters: dict[str, Any]) -> str:
-        return json.dumps(parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
 
     def _ensure_screenshot_dir(self) -> None:
-        """Create the screenshot directory if it does not exist yet."""
-
         self.screenshot_directory.mkdir(parents=True, exist_ok=True)
 
     def _write_screenshot(self, filename: str) -> Path:
-        """Capture the current screen into the screenshot directory."""
+        """截取当前屏幕并保存到截图目录。"""
 
         self._ensure_screenshot_dir()
         data = self.adb.screenshot()
@@ -727,38 +782,15 @@ class AutomationEngine:
         path.write_bytes(data)
         return path
 
-    def _capture_checkpoint(self, task_id: str, step: int, label: str) -> None:
-        if self.screenshot_save_level != "all":
-            return
-        try:
-            path = self._write_screenshot(
-                f"{task_id}_step_{step:02d}_{label}_{self._run_stamp}.png"
-            )
-            image = QImage.fromData(path.read_bytes())
-            if image.isNull():
-                self._log(f"截图[{label}]已保存但无法解析: {path}")
-            elif (image.width(), image.height()) != SCREEN_SIZE:
-                self._log(
-                    f"截图[{label}]已保存但尺寸异常: {path} "
-                    f"({image.width()}x{image.height()})"
-                )
-            else:
-                self._log(f"截图[{label}]: {path}")
-        except Exception as exc:
-            self._log(f"截图[{label}]失败，不影响动作: {exc}")
-
     def _capture_key_screenshot(self, task_id: str, label: str) -> None:
-        """Capture the success page referenced by the screenshot action."""
+        """以 ``label`` 命名截取关键页面截图，并记录到运行结果中。"""
 
         try:
             safe_label = (
                 "".join(
-                    character
-                    if character.isalnum() or character in "-_（）()"
-                    else "_"
+                    character if character.isalnum() or character in "-_（）()" else "_"
                     for character in label
-                )
-                .strip("_")
+                ).strip("_")
                 or "key"
             )
             path = self._write_screenshot(
@@ -774,17 +806,17 @@ class AutomationEngine:
         self.log_callback(f"[{timestamp}] {message}")
 
     def _log_header(self, *parts: str) -> None:
-        """Log a one-line task/step/action header."""
+        """输出一行的 task/step/action 日志头。"""
 
         self._log(" ".join(parts))
 
     def _log_separator(self, label: str) -> None:
-        """Log a visible separator marking the end of one task run."""
+        """输出带当前运行阶段标签的醒目分隔线。"""
 
         self._log(f"================ {label} ================")
 
     def _save_failure_screenshot(self, task_id: str, step: int) -> Path | None:
-        if self.screenshot_save_level == "none":
+        if not self.screenshots_enabled:
             return None
         try:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -794,21 +826,22 @@ class AutomationEngine:
             return None
 
 
-# Primitive action type -> handler method name.  The schema's PRIMITIVE_TYPES
-# declare the supported set; this table wires each type to its executor.
-_ACTION_HANDLERS: dict[str, str] = {
-    "stop": "_execute_stop",
-    "launch": "_execute_launch",
-    "wait": "_execute_wait",
-    "back": "_execute_back",
-    "swipe": "_execute_swipe",
-    "click": "_click",
-    "detect": "_detect",
-    "if": "_if",
-    "loop_until": "_loop_until",
-    "capture_screenshot": "_execute_capture_screenshot",
+# 原语动作类型到执行器的直接映射（方法引用，无反射）。PRIMITIVE_TYPES 声明
+# 支持的类型集合；加载时强制校验两个集合完全一致，漏登记直接启动失败。
+_ACTION_HANDLERS: dict[str, Callable[[AutomationEngine, dict[str, Any]], None]] = {
+    "stop": AutomationEngine._execute_stop,
+    "launch": AutomationEngine._execute_launch,
+    "wait": AutomationEngine._execute_wait,
+    "back": AutomationEngine._execute_back,
+    "swipe": AutomationEngine._execute_swipe,
+    "swipe_until": AutomationEngine._execute_swipe_until,
+    "click": AutomationEngine._click,
+    "detect": AutomationEngine._detect,
+    "if": AutomationEngine._if,
+    "loop_until": AutomationEngine._loop_until,
+    "capture_screenshot": AutomationEngine._execute_capture_screenshot,
 }
 
-_MISSING_HANDLERS = [t for t in PRIMITIVE_TYPES if t not in _ACTION_HANDLERS]
-if _MISSING_HANDLERS:
-    raise RuntimeError(f"动作类型缺少处理器: {_MISSING_HANDLERS}")
+_UNHANDLED_TYPES = sorted(PRIMITIVE_TYPE_SET - set(_ACTION_HANDLERS))
+if _UNHANDLED_TYPES:
+    raise RuntimeError(f"动作类型缺少处理器: {_UNHANDLED_TYPES}")

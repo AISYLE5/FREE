@@ -39,7 +39,7 @@
       "retries": 2,
       "locate": "ui",
       "target": "text",
-      "text": "QQ",
+      "texts": ["QQ"],
       "match_mode": "exact"
     },
     {
@@ -48,7 +48,7 @@
       "retries": 2,
       "locate": "ui",
       "target": "text",
-      "text": "${qq_group_name}",
+      "texts": ["${qq_group_name}"],
       "match_mode": "exact"
     },
     {
@@ -57,7 +57,7 @@
       "retries": 2,
       "locate": "ui",
       "target": "text",
-      "text": "发送",
+      "texts": ["发送"],
       "match_mode": "exact"
     },
     {

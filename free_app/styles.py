@@ -1,24 +1,25 @@
-"""Shared QSS fragments used across the free_app GUI widgets.
+"""``free_app`` 各 GUI 控件共享的 QSS 片段。
 
-Every page-level stylesheet consumes :data:`COMMON_CONTROLS_QSS` for the
-shared appearance of standard controls (inputs, spin boxes, text edits,
-combo boxes, buttons and checkboxes), so control geometry and interaction
-states stay identical everywhere.  Smaller fragments remain available for
-the shared message-box, scroll-bar, card-title and OCR-feedback rules;
-each page may still add layout/card/list/semantic exceptions around them.
+每个页面级样式表都通过 :data:`COMMON_CONTROLS_QSS` 获得标准控件
+（输入框、微调框、文本框、下拉框、按钮与复选框）的统一外观，
+使控件的几何尺寸与交互状态处处一致。这里还提供消息框、滚动条、
+卡片标题与 OCR 反馈等更小的共享片段；各页面仍可在其基础上
+追加布局/卡片/列表/语义色的例外规则。
 """
 
 from __future__ import annotations
 
-# Vertical gradient shared by the green "save" / primary buttons.
+# 绿色"保存"/主按钮共用的垂直渐变。
 GREEN_VGRAD = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #137f73)"
-GREEN_VGRAD_HOVER = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #0e6e64)"
+GREEN_VGRAD_HOVER = (
+    "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #0e6e64)"
+)
 GREEN_DIAG = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a9385, stop:1 #137f73)"
-DARK_PRESSED_VGRAD = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #137f73, stop:1 #095b54)"
+DARK_PRESSED_VGRAD = (
+    "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #137f73, stop:1 #095b54)"
+)
 
-# --------------------------------------------------------------------------
-# Form control box (QLineEdit / QSpinBox / QTextEdit / QPlainTextEdit).
-# --------------------------------------------------------------------------
+# 表单控件框（QLineEdit / QSpinBox / QTextEdit / QPlainTextEdit）。
 UNIFIED_FORM_CONTROLS_QSS = (
     "            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {\n"
     "                background: #ffffff;\n"
@@ -45,9 +46,7 @@ UNIFIED_FORM_CONTROLS_QSS = (
     "            }\n"
 )
 
-# --------------------------------------------------------------------------
-# Combo box (base, dropdown arrow, popup item view).  Shared by all pages.
-# --------------------------------------------------------------------------
+# 下拉框（基础、下拉箭头、弹层列表视图）。所有页面共用。
 UNIFIED_COMBO_QSS = (
     "            QComboBox {\n"
     "                min-height: 40px;\n"
@@ -104,9 +103,7 @@ UNIFIED_COMBO_QSS = (
     "            }\n"
 )
 
-# --------------------------------------------------------------------------
-# Checkbox (base + indicator).  Shared from the action editors.
-# --------------------------------------------------------------------------
+# 复选框（基础 + 指示器）。动作编辑器共用。
 UNIFIED_CHECKBOX_QSS = (
     "            QCheckBox {\n"
     "                color: #193331;\n"
@@ -128,10 +125,8 @@ UNIFIED_CHECKBOX_QSS = (
     "            }\n"
 )
 
-# --------------------------------------------------------------------------
-# Generic push button (base + semantic variants + interaction states).
-# Shared by the action-editor dialogs and the task-manager widgets.
-# --------------------------------------------------------------------------
+# 通用按钮（基础 + 语义变体 + 交互状态）。
+# 动作编辑器对话框与任务管理页控件共用。
 UNIFIED_BUTTONS_QSS = (
     "            QPushButton, QToolButton {\n"
     "                min-height: 40px;\n"
@@ -205,16 +200,16 @@ UNIFIED_BUTTONS_QSS = (
     "            QPushButton#quietButton:pressed, QPushButton#settingsCancelButton:pressed {\n"
     "                background: #dcece7;\n"
     "            }\n"
-    "            QPushButton#dangerButton, QPushButton#settingsModelAction[downloaded=\"true\"] {\n"
+    '            QPushButton#dangerButton, QPushButton#settingsModelAction[downloaded="true"] {\n'
     "                color: #a34a42;\n"
     "                background: #fbeae8;\n"
     "                border-color: #e5b9b3;\n"
     "            }\n"
-    "            QPushButton#dangerButton:hover, QPushButton#settingsModelAction[downloaded=\"true\"]:hover {\n"
+    '            QPushButton#dangerButton:hover, QPushButton#settingsModelAction[downloaded="true"]:hover {\n'
     "                background: #f6d8d4;\n"
     "                border-color: #d88f87;\n"
     "            }\n"
-    "            QPushButton#dangerButton:pressed, QPushButton#settingsModelAction[downloaded=\"true\"]:pressed {\n"
+    '            QPushButton#dangerButton:pressed, QPushButton#settingsModelAction[downloaded="true"]:pressed {\n'
     "                background: #efc4be;\n"
     "                border-color: #c9776e;\n"
     "            }\n"
@@ -234,9 +229,9 @@ UNIFIED_BUTTONS_QSS = (
     "            }\n"
 )
 
-# One entry point for page-level stylesheets: base rules for every shared
-# control, in a fixed order, so a page cannot add a second, slightly
-# different base rule for the same public control.
+# 页面级样式表的唯一入口：所有公共控件的基础规则，
+# 按固定顺序排列，使页面无法为同一公共控件追加第二条
+# 略有不同的基础规则。
 COMMON_CONTROLS_QSS = (
     UNIFIED_FORM_CONTROLS_QSS
     + UNIFIED_COMBO_QSS
@@ -244,46 +239,38 @@ COMMON_CONTROLS_QSS = (
     + UNIFIED_BUTTONS_QSS
 )
 
-# Shared look for the standalone editor dialogs (action / steps / compound):
-# dialog background, paragraph labels, section titles and list styling.
-DIALOG_QSS = (
-    "\n"
-    "            QDialog {\n"
-    "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f7faf9, stop:1 #f2f6f4);\n"
-    "                color: #193331;\n"
-    "            }\n"
-    "            QDialog QLabel {\n"
-    "                color: #193331;\n"
-    "            }\n"
-    "            QDialog QLabel#dialogSectionTitle {\n"
-    "                color: #244340;\n"
-    "                font-size: 13px;\n"
-    "                font-weight: 700;\n"
-    "            }\n"
-    "            QDialog QListWidget {\n"
+# 嵌入式面板（查看器、对话框、任务管理页）的公共底座：透明背景。
+PANEL_BASE_QSS = "            QWidget { background: transparent; color: #193331; }\n"
+
+# 面板内的白色圆角内容区：JSON/运行日志文本框与 UI 树共用同一外观。
+PANEL_CONTENT_QSS = (
+    "            QPlainTextEdit, QTreeWidget {\n"
     "                background: #ffffff;\n"
     "                border: 1px solid #cbdcd6;\n"
     "                border-radius: 8px;\n"
-    "                padding: 6px;\n"
+    "                color: #244340;\n"
+    "                outline: 0;\n"
     "            }\n"
-    "            QDialog QListWidget::item {\n"
-    "                padding: 8px 12px;\n"
-    "                border-radius: 6px;\n"
-    "                border: 1px solid transparent;\n"
-    "                margin-bottom: 4px;\n"
+    "            QPlainTextEdit {\n"
+    "                padding: 10px;\n"
+    "                selection-background-color: #cce8e0;\n"
+    "                font-size: 13px;\n"
     "            }\n"
-    "            QDialog QListWidget::item:selected {\n"
-    "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #dff2ed, stop:1 #d0ebe4);\n"
-    "                border: 1px solid #65b3a7;\n"
+    "            QTreeWidget::item {\n"
+    "                min-height: 28px;\n"
+    "                padding: 4px 8px;\n"
+    "                border: none;\n"
+    "            }\n"
+    "            QTreeWidget::item:selected {\n"
+    "                background: #dff2ed;\n"
     "                color: #0f625b;\n"
     "            }\n"
-    "            QDialog QListWidget::item:hover {\n"
+    "            QTreeWidget::item:hover {\n"
     "                background: #edf7f4;\n"
-    "                border: 1px solid #e0e9e6;\n"
     "            }\n"
 )
 
-# Slim scrollbar shared by the settings page and all application views.
+# 设置页与所有应用视图共用的细滚动条。
 SCROLLBAR_QSS = (
     "            QScrollBar:vertical {\n"
     "                width: 6px;\n"
@@ -314,9 +301,9 @@ SCROLLBAR_QSS = (
     "            }\n"
 )
 
-# Keep native message boxes readable when a parent widget uses transparent
-# backgrounds.  Without these rules, Windows can expose a black dialog body
-# while retaining the application's dark text color.
+# 父控件使用透明背景时，保持系统消息框可读。
+# 没有这些规则，Windows 可能在保留应用深色文字颜色的同时
+# 暴露出黑色对话框主体。
 MESSAGE_BOX_QSS = (
     "            QMessageBox, QMessageBox QWidget {\n"
     "                background: #f2f6f4;\n"
@@ -367,9 +354,7 @@ MESSAGE_BOX_QSS = (
     "            }\n"
 )
 
-# --------------------------------------------------------------------------
-# Small panel labels.  Shared by several dialogs/widgets.
-# --------------------------------------------------------------------------
+# 面板小标签。多个对话框/控件共用。
 CARD_TITLE_QSS = (
     "            QLabel#settingsCardTitle {\n"
     "                color: #244340;\n"
@@ -388,8 +373,8 @@ OCR_FEEDBACK_QSS = (
     "            }\n"
 )
 
-# SettingsComboBox draws its own popup rather than using Qt's native popup.
-# Keep that popup's public dropdown styling here as well.
+# SettingsComboBox 自绘下拉弹层，而非使用 Qt 原生弹层。
+# 该弹层的公共下拉样式也统一放在这里。
 COMBO_POPUP_QSS = """
     QFrame#settingsComboPopup {
         background: transparent;

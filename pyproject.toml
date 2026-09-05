@@ -21,6 +21,7 @@ dev = [
     "pytest>=8",
     "coverage>=7",
     "mypy>=1.8",
+    "ruff>=0.8",
 ]
 
 [project.scripts]
@@ -37,6 +38,9 @@ source = ["free_app"]
 branch = true
 data_file = "cache/coverage"
 
+[tool.coverage.report]
+fail_under = 80
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
@@ -44,11 +48,34 @@ warn_unused_ignores = true
 cache_dir = "cache/mypy"
 
 # The PySide6 UI builders create widgets dynamically inside methods, invisible
-# to mypy; exempt these modules from attr-defined only.
+# to mypy; exempt these modules from attr-defined (and the has-type errors the
+# same dynamic attributes produce inside data-driven lambdas) only.
 [[tool.mypy.overrides]]
 module = [
     "free_app.action_editor_dialogs",
     "free_app.settings_dialog",
     "free_app.task_manager",
 ]
-disable_error_code = ["attr-defined"]
+disable_error_code = ["attr-defined", "has-type"]
+
+[tool.ruff]
+target-version = "py311"
+src = ["free_app", "tests"]
+# 与 pytest/mypy/coverage 一致，所有缓存收在项目根 cache/ 下。
+cache-dir = "cache/ruff"
+
+[tool.ruff.lint]
+# 有意忽略：
+# - BLE001  宽 except 是项目约定（GUI/引擎边界统一兜底，回调与设备层不因
+#           单个异常而中断整条流程）。
+# - DTZ005  datetime.now() 用于本地时间戳文件名（run_*.log / 截图名），
+#           无需时区语义。
+# - TRY004  ValueError 是公共配置 API 的约定异常类型（调用方统一捕获），
+#           保持稳定而非按"类型错误"字面归类。
+# - RUF012  类属性常量表（_UI_TASK_NAMES/_STATE_LABELS/_STATE_COLORS 等）
+#           只读使用，不改动。
+ignore = ["BLE001", "DTZ005", "TRY004", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里嵌套 with 是常见可读写法；DTZ001 用于构造固定时刻做断言。
+"tests/*.py" = ["SIM117", "DTZ001"]

@@ -1,51 +1,40 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from threading import Event
-from typing import Any, Callable
+from typing import Any
 
 from .constants import MAX_TASK_EXECUTION_COUNT
 from .models import RunResult, RunStatus, TaskDefinition
 
 
-def task_execution_count(
-    settings: dict[str, Any],
-    default: int = 1,
-    *,
-    task_id: str | None = None,
-) -> int:
-    """Return the number of times a task runs during a batch execution."""
+def task_execution_count(settings: dict[str, Any], task_id: str) -> int:
+    """返回批量执行中一个任务的运行次数。
 
-    configured_counts = settings.get("task_execution_counts")
-    if not isinstance(configured_counts, dict):
-        configured_counts = {}
-    configured = (
-        configured_counts.get(task_id)
-        if task_id
-        else default
-    )
-    try:
-        value = int(float(configured)) if configured is not None else default
-    except (TypeError, ValueError):
-        value = default
-    return min(MAX_TASK_EXECUTION_COUNT, max(0, value))
+    ``load_settings`` 保证 ``task_execution_counts`` 是已钳制到
+    ``[0, MAX_TASK_EXECUTION_COUNT]`` 的 ``dict[str, int]``；
+    缺失条目表示任务运行一次。
+    """
+
+    counts = settings.get("task_execution_counts") or {}
+    # int() 是消费点断言：契约外脏类型显式抛错，不静默透传。
+    return int(counts.get(task_id, 1))
 
 
 def batch_tasks_to_run(
     tasks: list[TaskDefinition] | tuple[TaskDefinition, ...],
     settings: dict[str, Any],
 ) -> list[TaskDefinition]:
-    """Return tasks that should run during ``执行全部``.
+    """返回“执行全部”批量执行时应运行的任务。
 
-    Tasks whose execution count is 0 are skipped.  Each returned task appears
-    once; the number of allowed attempts is handled by
-    :func:`run_task_executions`.
+    执行次数为 0 的任务被跳过。每个返回的任务只出现一次；
+    允许的尝试次数由 :func:`run_task_executions` 处理。
     """
 
     selected: list[TaskDefinition] = []
     for task in tasks:
-        count = task_execution_count(settings, task_id=task.id)
-        if count > 0:
+        if task_execution_count(settings, task.id) > 0:
             selected.append(task)
     return selected
 
@@ -59,14 +48,13 @@ def run_task_executions(
     reconnect_callback: Callable[[], object] | None = None,
     stop_event: Event | None = None,
 ) -> RunResult:
-    """Run a task up to ``execution_count`` times, stopping on success.
+    """将任务运行最多 ``execution_count`` 次，成功即停止。
 
-    A successful first attempt moves on immediately.  A failed attempt is
-    retried until it succeeds or the configured execution count is reached
-    (so count N allows at most N-1 retries).  Single-task callers pass
-    ``execution_count=1`` so the setting never affects a manual single run.
-    Before each retry the optional ``reconnect_callback`` runs after cleanup
-    so a disconnected network ADB device can be restored first.
+    一次尝试成功会立即结束运行；失败的尝试会重试，直到成功或
+    次数用尽（次数 N 最多允许 N-1 次重试）。单任务调用方传入
+    ``execution_count=1``，因此配置的执行次数不影响手动单次运行。
+    每次重试前，可选的 ``reconnect_callback`` 在 ``cleanup_callback``
+    之后执行，在下一次尝试前恢复已断开的网络 ADB 设备。
     """
 
     total_attempts = min(MAX_TASK_EXECUTION_COUNT, max(1, execution_count))
@@ -110,5 +98,5 @@ def run_task_executions(
         if stop_event is not None and stop_event.is_set():
             return result
 
-    # Invariant: every iteration either returns or advances toward total_attempts.
+    # 不变式：每次迭代要么返回，要么向 total_attempts 推进。
     raise RuntimeError("任务执行流程异常结束")

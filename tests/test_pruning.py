@@ -25,7 +25,10 @@ class PruningTests(unittest.TestCase):
             removed = prune_files(target, 2, "permanent")
 
             self.assertEqual(removed, 3)
-            self.assertEqual(sorted(path.name for path in target.iterdir()), ["file3.txt", "file4.txt"])
+            self.assertEqual(
+                sorted(path.name for path in target.iterdir()),
+                ["file3.txt", "file4.txt"],
+            )
 
     def test_recycle_sends_oldest_to_trash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -38,15 +41,17 @@ class PruningTests(unittest.TestCase):
             for index, path in enumerate(files):
                 os.utime(path, (index, index))
 
-            def fake_trash(path: Path) -> None:
+            def fake_trash(path: Path, mode: str) -> None:
                 path.unlink()
 
-            with patch("free_app.pruning.send_to_recycle_bin", side_effect=fake_trash) as trash:
+            with patch("free_app.pruning.remove_path", side_effect=fake_trash) as trash:
                 removed = prune_files(target, 2, "recycle")
 
             self.assertEqual(removed, 2)
             self.assertEqual(trash.call_count, 2)
-            self.assertEqual(sorted(path.name for path in target.iterdir()), ["f2.txt", "f3.txt"])
+            self.assertEqual(
+                sorted(path.name for path in target.iterdir()), ["f2.txt", "f3.txt"]
+            )
 
     def test_zero_limit_keeps_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -76,13 +81,13 @@ class PruningTests(unittest.TestCase):
                 path.write_text(str(index), encoding="utf-8")
             logs: list[str] = []
 
-            def failing_trash(path: Path) -> None:
+            def failing_trash(path: Path, mode: str) -> None:
                 if path.name == "f0.txt":
                     raise TrashError("recycle failed")
                 path.unlink()
 
             with patch(
-                "free_app.pruning.send_to_recycle_bin",
+                "free_app.pruning.remove_path",
                 side_effect=failing_trash,
             ):
                 removed = prune_files(target, 1, "recycle", logs.append)
@@ -97,11 +102,15 @@ class PruningTests(unittest.TestCase):
                 send_to_recycle_bin(path)
 
     def test_recycle_bin_reports_native_success_and_failure(self) -> None:
-        with patch("free_app.trash.ctypes.windll.shell32.SHFileOperationW", return_value=0) as operation:
+        with patch(
+            "free_app.trash.ctypes.windll.shell32.SHFileOperationW", return_value=0
+        ) as operation:
             send_to_recycle_bin(Path("C:/unused"))
         operation.assert_called_once()
 
-        with patch("free_app.trash.ctypes.windll.shell32.SHFileOperationW", return_value=5):
+        with patch(
+            "free_app.trash.ctypes.windll.shell32.SHFileOperationW", return_value=5
+        ):
             with self.assertRaises(TrashError):
                 send_to_recycle_bin(Path("C:/unused"))
 
@@ -123,11 +132,11 @@ class PruningTests(unittest.TestCase):
             (target / "a.log").write_text("a", encoding="utf-8")
             (target / "b.log").write_text("b", encoding="utf-8")
 
-            def fake_trash(path: Path) -> None:
+            def fake_trash(path: Path, mode: str) -> None:
                 path.unlink()
 
             with patch(
-                "free_app.pruning.send_to_recycle_bin",
+                "free_app.pruning.remove_path",
                 side_effect=fake_trash,
             ) as trash:
                 removed = clear_output_files(target, "recycle")
@@ -138,7 +147,9 @@ class PruningTests(unittest.TestCase):
 
     def test_clear_output_files_skips_missing_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(clear_output_files(Path(directory) / "missing", "permanent"), 0)
+            self.assertEqual(
+                clear_output_files(Path(directory) / "missing", "permanent"), 0
+            )
 
     def test_clear_output_files_logs_failed_cleanup_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,13 +158,13 @@ class PruningTests(unittest.TestCase):
             (target / "b.log").write_text("b", encoding="utf-8")
             logs: list[str] = []
 
-            def failing_trash(path: Path) -> None:
+            def failing_trash(path: Path, mode: str) -> None:
                 if path.name == "a.log":
                     raise OSError("remove failed")
                 path.unlink()
 
             with patch(
-                "free_app.pruning.send_to_recycle_bin",
+                "free_app.pruning.remove_path",
                 side_effect=failing_trash,
             ):
                 removed = clear_output_files(target, "recycle", logs.append)

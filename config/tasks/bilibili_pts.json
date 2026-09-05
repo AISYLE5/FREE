@@ -16,7 +16,7 @@
       "retries": 2,
       "locate": "ui",
       "target": "text",
-      "text": "我的",
+      "texts": ["我的"],
       "match_mode": "exact"
     },
     {
@@ -25,7 +25,7 @@
       "retries": 2,
       "locate": "ui",
       "target": "text",
-      "text": "大会员中心",
+      "texts": ["大会员中心"],
       "match_mode": "exact"
     },
     {
@@ -33,7 +33,12 @@
       "type": "compound"
     },
     {
-      "type": "detect",
+      "type": "swipe_until",
+      "x1": 540,
+      "y1": 1450,
+      "x2": 540,
+      "y2": 300,
+      "duration_ms": 800,
       "locate": "ocr",
       "texts": [
         "签到",
@@ -44,57 +49,21 @@
       "timeout_seconds": 8,
       "interval_seconds": 1,
       "continue_on_timeout": true,
+      "max_iterations": 6,
       "retries": 2
     },
     {
-      "equals": false,
-      "retries": 2,
-      "then": [
-        {
-          "equals": true,
-          "max_iterations": 6,
-          "steps": [
-            {
-              "duration_ms": 800,
-              "type": "swipe",
-              "x1": 540,
-              "x2": 540,
-              "y1": 1450,
-              "y2": 300
-            },
-            {
-              "continue_on_timeout": true,
-              "interval_seconds": 1,
-              "locate": "ocr",
-              "match_mode": "exact",
-              "result_var": "state",
-              "texts": [
-                "签到",
-                "已签到",
-                "去使用"
-              ],
-              "timeout_seconds": 8,
-              "type": "detect"
-            }
-          ],
-          "type": "loop_until",
-          "var": "state_found"
-        }
-      ],
-      "type": "if",
-      "var": "state_found"
-    },
-    {
-      "locate": "ocr",
       "match_mode": "exact",
       "retries": 2,
       "skip_if_texts": [
-        "已签到",
-        "去使用"
+        "已签到"
       ],
-      "text": "签到",
+      "texts": [
+        "签到"
+      ],
       "timeout_seconds": 15,
-      "type": "click"
+      "type": "click",
+      "locate": "ocr"
     },
     {
       "type": "wait",

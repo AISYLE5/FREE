@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 
 def default_base_directory() -> Path:
-    """Return the project root containing the only supported user config directory."""
+    """返回项目根目录——用户配置目录唯一支持的基准目录。"""
 
     return Path(__file__).resolve().parent.parent
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    del argv  # GUI-only entry; arguments are not interpreted.
+    del argv  # 仅 GUI 入口；不解释命令行参数。
     base_directory = default_base_directory()
 
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
+
     from .main_window import create_window
 
     application = QApplication(sys.argv)

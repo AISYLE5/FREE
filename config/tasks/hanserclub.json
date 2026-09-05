@@ -14,7 +14,7 @@
       "type": "click",
       "locate": "ui",
       "target": "text",
-      "text": "更多",
+      "texts": ["更多"],
       "match_mode": "exact",
       "timeout_seconds": 20,
       "retries": 2
@@ -23,7 +23,7 @@
       "type": "click",
       "locate": "ui",
       "target": "text",
-      "text": "签到",
+      "texts": ["签到"],
       "skip_if_texts": [
         "已签到"
       ],

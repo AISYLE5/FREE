@@ -1,6 +1,5 @@
 {
   "name": "ocr_claim_or_watch",
-  "params": [],
   "steps": [
     {
       "interval_seconds": 1,
@@ -40,7 +39,7 @@
           "locate": "ocr",
           "match_mode": "exact",
           "retries": 2,
-          "text": "去观看",
+          "texts": ["去观看"],
           "timeout_seconds": 30,
           "type": "click"
         },
@@ -53,7 +52,7 @@
           "locate": "ocr",
           "match_mode": "fuzzy",
           "retries": 2,
-          "text": "%看至第%集%",
+          "texts": ["%看至第%集%"],
           "timeout_seconds": 30,
           "type": "click"
         },
@@ -98,7 +97,7 @@
               "locate": "ocr",
               "match_mode": "exact",
               "retries": 2,
-              "text": "领取",
+              "texts": ["领取"],
               "timeout_seconds": 30,
               "type": "click"
             }

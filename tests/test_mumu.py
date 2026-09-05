@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
-from threading import Event
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from free_app.adb import AdbError, Device
@@ -53,12 +53,14 @@ class MumuTests(unittest.TestCase):
                 with self.assertRaisesRegex(MuMuError, "cli failed"):
                     controller.launch("0")
 
-            with patch(
-                "free_app.mumu.subprocess.run",
-                side_effect=subprocess.TimeoutExpired([str(executable)], 3),
+            with (
+                patch(
+                    "free_app.mumu.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired([str(executable)], 3),
+                ),
+                self.assertRaisesRegex(MuMuError, "MuMu CLI"),
             ):
-                with self.assertRaisesRegex(MuMuError, "MuMu CLI"):
-                    controller.shutdown("0")
+                controller.shutdown("0")
 
     def test_controller_run_rejects_missing_executable(self) -> None:
         controller = MuMuController(Path("C:/missing/mumu-cli.exe"))
@@ -115,7 +117,7 @@ class MumuTests(unittest.TestCase):
         ):
             device = connect_to_running_mumu(
                 adb,
-                {"mumu_vmindex": "1", "auto_start_mumu": True},
+                {"mumu_vm_index": 1, "auto_start_mumu": True},
             )
 
         self.assertEqual(adb.serial, "127.0.0.1:16416")
@@ -124,27 +126,86 @@ class MumuTests(unittest.TestCase):
 
     def test_connect_to_running_mumu_requires_adb_address(self) -> None:
         adb = FakeAdb()
-        with patch(
-            "free_app.mumu.MuMuController.instance_info",
-            return_value={"adb_host_ip": "127.0.0.1", "adb_port": 0},
+        with (
+            patch(
+                "free_app.mumu.MuMuController.instance_info",
+                return_value={"adb_host_ip": "127.0.0.1", "adb_port": 0},
+            ),
+            self.assertRaisesRegex(AdbError, "未返回动态 ADB 地址"),
         ):
-            with self.assertRaisesRegex(AdbError, "未返回动态 ADB 地址"):
-                connect_to_running_mumu(adb, {"mumu_vmindex": "1"})
+            connect_to_running_mumu(adb, {"mumu_vm_index": 1})
 
-    def test_connect_to_running_mumu_uses_default_timeout_on_bad_setting(self) -> None:
+    def test_connect_to_running_mumu_passes_cleaned_int_vm_index(self) -> None:
+        seen: list[str] = []
+
+        class RecordingController:
+            def instance_info(self, vmindex: str) -> dict[str, object]:
+                seen.append(vmindex)
+                return {"adb_host_ip": "127.0.0.1", "adb_port": 16416}
+
         adb = FakeAdb()
-        with patch(
-            "free_app.mumu.MuMuController.instance_info",
-            return_value={"adb_host_ip": "127.0.0.1", "adb_port": 0},
-        ):
-            with self.assertRaises(AdbError):
+        with patch("free_app.mumu.MuMuController", return_value=RecordingController()):
+            device = connect_to_running_mumu(
+                adb, {"mumu_vm_index": 2, "mumu_cli_path": "C:/mumu-cli.exe"}
+            )
+
+        self.assertEqual(seen, ["2"])
+        self.assertEqual(device.serial, "127.0.0.1:16416")
+
+    def test_connect_to_running_mumu_rejects_non_numeric_timeout(self) -> None:
+        # helpers.number_setting 已改为严格版：脏值不再静默回退到默认值。
+        for bad in ("bad", None, [10]):
+            with (
+                self.subTest(mumu_command_timeout_seconds=bad),
+                self.assertRaises(TypeError),
+            ):
                 connect_to_running_mumu(
-                    adb,
+                    FakeAdb(),
                     {
-                        "mumu_vmindex": "1",
-                        "mumu_command_timeout_seconds": "bad",
+                        "mumu_vm_index": 1,
+                        "mumu_command_timeout_seconds": bad,
                     },
                 )
+
+        for non_finite in (float("inf"), float("-inf"), float("nan")):
+            with (
+                self.subTest(mumu_command_timeout_seconds=non_finite),
+                self.assertRaises(ValueError),
+            ):
+                connect_to_running_mumu(
+                    FakeAdb(),
+                    {
+                        "mumu_vm_index": 1,
+                        "mumu_command_timeout_seconds": non_finite,
+                    },
+                )
+
+    def test_connect_to_running_mumu_rejects_boolean_timeout(self) -> None:
+        with self.assertRaisesRegex(TypeError, "必须是数字"):
+            connect_to_running_mumu(
+                FakeAdb(),
+                {"mumu_vm_index": 1, "mumu_command_timeout_seconds": True},
+            )
+
+    def test_controller_command_timeout_is_clamped_to_minimum(self) -> None:
+        with patch("free_app.mumu.MuMuController") as controller_type:
+            with self.assertRaises(AdbError):
+                connect_to_running_mumu(
+                    FakeAdb(),
+                    {"mumu_vm_index": 1, "mumu_command_timeout_seconds": 0.5},
+                )
+
+        self.assertEqual(controller_type.call_args.kwargs["command_timeout"], 1.0)
+
+    def test_controller_command_timeout_keeps_valid_value(self) -> None:
+        with patch("free_app.mumu.MuMuController") as controller_type:
+            with self.assertRaises(AdbError):
+                connect_to_running_mumu(
+                    FakeAdb(),
+                    {"mumu_vm_index": 1, "mumu_command_timeout_seconds": 12},
+                )
+
+        self.assertEqual(controller_type.call_args.kwargs["command_timeout"], 12.0)
 
     def test_connect_to_running_mumu_rejects_device_not_online(self) -> None:
         class NoDeviceAdb:
@@ -157,12 +218,14 @@ class MumuTests(unittest.TestCase):
                 return []
 
         adb = NoDeviceAdb()
-        with patch(
-            "free_app.mumu.MuMuController.instance_info",
-            return_value={"adb_host_ip": "127.0.0.1", "adb_port": 16416},
+        with (
+            patch(
+                "free_app.mumu.MuMuController.instance_info",
+                return_value={"adb_host_ip": "127.0.0.1", "adb_port": 16416},
+            ),
+            self.assertRaisesRegex(AdbError, "ADB 设备未上线"),
         ):
-            with self.assertRaisesRegex(AdbError, "ADB 设备未上线"):
-                connect_to_running_mumu(adb, {"mumu_vmindex": "1"})
+            connect_to_running_mumu(adb, {"mumu_vm_index": 1})
 
     def test_controller_builds_instance_launch_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -178,7 +241,9 @@ class MumuTests(unittest.TestCase):
                 MuMuController(executable).launch("1")
 
         command = run.call_args.args[0]
-        self.assertEqual(command, [str(executable), "control", "--vmindex", "1", "launch"])
+        self.assertEqual(
+            command, [str(executable), "control", "--vmindex", "1", "launch"]
+        )
 
     def test_controller_builds_instance_shutdown_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -194,7 +259,9 @@ class MumuTests(unittest.TestCase):
                 MuMuController(executable).shutdown("1")
 
         command = run.call_args.args[0]
-        self.assertEqual(command, [str(executable), "control", "--vmindex", "1", "shutdown"])
+        self.assertEqual(
+            command, [str(executable), "control", "--vmindex", "1", "shutdown"]
+        )
 
     def test_controller_builds_main_close_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -265,7 +332,9 @@ class MumuTests(unittest.TestCase):
     def test_mumu_cli_path_uses_default_when_nothing_is_configured(self) -> None:
         self.assertEqual(mumu_cli_path({}), DEFAULT_MUMU_CLI)
 
-    def test_controller_lists_instances_with_fallback_names_and_skips_bad_keys(self) -> None:
+    def test_controller_lists_instances_with_fallback_names_and_skips_bad_keys(
+        self,
+    ) -> None:
         controller = MuMuController(Path("C:/mumu-cli.exe"))
         with patch.object(
             controller,
@@ -288,7 +357,11 @@ class MumuTests(unittest.TestCase):
         controller = type(
             "ControllerStub",
             (),
-            {"shutdown": lambda self, _vmindex: (_ for _ in ()).throw(MuMuError("shutdown failed"))},
+            {
+                "shutdown": lambda self, _vmindex: (_ for _ in ()).throw(
+                    MuMuError("shutdown failed")
+                )
+            },
         )()
         logs: list[str] = []
         with patch("free_app.mumu.MuMuController", return_value=controller):
@@ -301,7 +374,7 @@ class MumuTests(unittest.TestCase):
 
         self.assertTrue(any("shutdown failed" in message for message in logs))
 
-    def test_shutdown_mumu_uses_defaults_for_invalid_timeouts(self) -> None:
+    def test_shutdown_mumu_rejects_non_numeric_timeouts(self) -> None:
         controller = type(
             "ControllerStub",
             (),
@@ -316,7 +389,7 @@ class MumuTests(unittest.TestCase):
         logs: list[str] = []
 
         with patch("free_app.mumu.MuMuController", return_value=controller):
-            self.assertTrue(
+            self.assertFalse(
                 shutdown_mumu(
                     {
                         "close_mumu_after_run": True,
@@ -327,6 +400,17 @@ class MumuTests(unittest.TestCase):
                     logs.append,
                 )
             )
+
+        self.assertTrue(
+            any("关闭 MuMu 实例失败" in message for message in logs),
+            logs,
+        )
+        self.assertTrue(
+            any(
+                "mumu_command_timeout_seconds 必须是数字" in message for message in logs
+            ),
+            logs,
+        )
 
     def test_shutdown_mumu_retries_after_invalid_state(self) -> None:
         class FlakyController:
@@ -379,12 +463,14 @@ class MumuTests(unittest.TestCase):
                 },
             )()
             logs: list[str] = []
-            with patch("free_app.mumu.MuMuController", return_value=controller) as controller_type:
+            with patch(
+                "free_app.mumu.MuMuController", return_value=controller
+            ) as controller_type:
                 self.assertTrue(
                     shutdown_mumu(
                         {
                             "close_mumu_after_run": True,
-                            "mumu_vmindex": 1,
+                            "mumu_vm_index": 1,
                             "mumu_cli_path": str(executable),
                         },
                         logs.append,
@@ -418,7 +504,7 @@ class MumuTests(unittest.TestCase):
                 shutdown_mumu(
                     {
                         "close_mumu_after_run": True,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_command_timeout_seconds": 1,
                         "mumu_poll_interval_seconds": 0,
@@ -430,7 +516,9 @@ class MumuTests(unittest.TestCase):
 
         self.assertEqual(controller.info_calls, 2)
         self.assertEqual(controller.shutdown_calls, 2)
-        self.assertTrue(any("关闭后 MuMu 状态: process=True" in message for message in logs))
+        self.assertTrue(
+            any("关闭后 MuMu 状态: process=True" in message for message in logs)
+        )
         self.assertTrue(any("已关闭 MuMu 实例 1" in message for message in logs))
 
     def test_shutdown_mumu_reports_timeout_when_process_stays_running(self) -> None:
@@ -458,7 +546,9 @@ class MumuTests(unittest.TestCase):
                 )
             )
 
-        self.assertTrue(any("超时" in message and "仍在运行" in message for message in logs))
+        self.assertTrue(
+            any("超时" in message and "仍在运行" in message for message in logs)
+        )
 
     def test_shutdown_mumu_is_disabled_by_default(self) -> None:
         with patch("free_app.mumu.MuMuController") as controller_type:
@@ -517,15 +607,17 @@ class MumuTests(unittest.TestCase):
 
         self.assertTrue(any("close failed" in message for message in logs))
 
-    def test_shutdown_mumu_app_uses_default_timeout_on_bad_setting(self) -> None:
+    def test_shutdown_mumu_app_logs_non_numeric_timeout(self) -> None:
         controller = type(
             "ControllerStub",
             (),
             {"close_main": lambda self: "closed"},
         )()
         logs: list[str] = []
-        with patch("free_app.mumu.MuMuController", return_value=controller):
-            self.assertTrue(
+        with patch(
+            "free_app.mumu.MuMuController", return_value=controller
+        ) as controller_type:
+            self.assertFalse(
                 shutdown_mumu_app(
                     {
                         "close_mumu_app_after_run": True,
@@ -535,6 +627,58 @@ class MumuTests(unittest.TestCase):
                     logs.append,
                 )
             )
+
+        controller_type.assert_not_called()
+        self.assertTrue(
+            any("退出 MuMu 软件程序失败" in message for message in logs), logs
+        )
+
+    def test_shutdown_mumu_rejects_non_numeric_poll_interval(self) -> None:
+        controller = type(
+            "ControllerStub",
+            (),
+            {
+                "shutdown": lambda self, _vmindex: "accepted",
+                "instance_info": lambda self, _vmindex: {
+                    "is_process_started": False,
+                    "is_android_started": False,
+                },
+            },
+        )()
+        logs: list[str] = []
+
+        with patch("free_app.mumu.MuMuController", return_value=controller):
+            self.assertFalse(
+                shutdown_mumu(
+                    {
+                        "close_mumu_after_run": True,
+                        "mumu_cli_path": "C:/mumu-cli.exe",
+                        "mumu_poll_interval_seconds": False,
+                    },
+                    logs.append,
+                )
+            )
+
+        self.assertTrue(
+            any("mumu_poll_interval_seconds 必须是数字" in message for message in logs),
+            logs,
+        )
+
+    def test_prepare_device_rejects_non_numeric_start_timeout(self) -> None:
+        # prepare_device 不做宽容回退：脏设置直接冒泡。
+        with patch("free_app.mumu.MuMuController") as controller_type:
+            with self.assertRaisesRegex(TypeError, "mumu_start_timeout_seconds"):
+                prepare_device(
+                    FakeAdb(),
+                    {
+                        "auto_start_mumu": False,
+                        "mumu_vm_index": 1,
+                        "mumu_cli_path": "C:/mumu-cli.exe",
+                        "mumu_start_timeout_seconds": "bad",
+                    },
+                )
+
+        controller_type.assert_called_once()
 
     def test_prepare_device_starts_instance_and_discovers_dynamic_address(self) -> None:
         adb = FakeAdb()
@@ -553,7 +697,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 2,
@@ -565,7 +709,9 @@ class MumuTests(unittest.TestCase):
         self.assertEqual(device.serial, "127.0.0.1:16416")
         self.assertTrue(any("启动 MuMu 实例 1" in message for message in logs))
 
-    def test_prepare_device_without_auto_start_also_discovers_dynamic_address(self) -> None:
+    def test_prepare_device_without_auto_start_also_discovers_dynamic_address(
+        self,
+    ) -> None:
         controller = type(
             "ControllerStub",
             (),
@@ -584,14 +730,16 @@ class MumuTests(unittest.TestCase):
                 adb,
                 {
                     "auto_start_mumu": False,
-                    "mumu_vmindex": 1,
+                    "mumu_vm_index": 1,
                     "mumu_cli_path": "C:/mumu-cli.exe",
                 },
             )
         self.assertEqual(device.serial, "127.0.0.1:16416")
         self.assertEqual(adb.connected, ["127.0.0.1:16416"])
 
-    def test_prepare_device_without_auto_start_reports_initial_state_failure(self) -> None:
+    def test_prepare_device_without_auto_start_reports_initial_state_failure(
+        self,
+    ) -> None:
         class NoDevicesAdb:
             serial: str | None = None
 
@@ -614,7 +762,7 @@ class MumuTests(unittest.TestCase):
                     NoDevicesAdb(),
                     {
                         "auto_start_mumu": False,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_start_timeout_seconds": 0,
                         "mumu_poll_interval_seconds": 0,
@@ -625,7 +773,9 @@ class MumuTests(unittest.TestCase):
         self.assertTrue(any("读取 MuMu 实例状态失败" in message for message in logs))
         self.assertTrue(any("自动启动已关闭" in message for message in logs))
 
-    def test_prepare_device_tolerates_instance_info_and_device_list_failures(self) -> None:
+    def test_prepare_device_tolerates_instance_info_and_device_list_failures(
+        self,
+    ) -> None:
         class FlakyAdb:
             serial: str | None = None
 
@@ -656,7 +806,7 @@ class MumuTests(unittest.TestCase):
                     adb,
                     {
                         "auto_start_mumu": False,
-                        "mumu_vmindex": 1,
+                        "mumu_vm_index": 1,
                         "mumu_cli_path": "C:/mumu-cli.exe",
                         "mumu_start_timeout_seconds": 1,
                         "mumu_poll_interval_seconds": 0,
@@ -703,7 +853,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 30,
             "mumu_poll_interval_seconds": 10,
@@ -742,7 +892,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 2,
@@ -790,7 +940,7 @@ class MumuTests(unittest.TestCase):
                 adb,
                 {
                     "auto_start_mumu": False,
-                    "mumu_vmindex": 0,
+                    "mumu_vm_index": 0,
                     "mumu_cli_path": "C:/mumu-cli.exe",
                     "mumu_start_timeout_seconds": 1,
                     "mumu_poll_interval_seconds": 0,
@@ -844,7 +994,7 @@ class MumuTests(unittest.TestCase):
         controller = DynamicController()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 42,
             "mumu_poll_interval_seconds": 0,
@@ -868,7 +1018,7 @@ class MumuTests(unittest.TestCase):
                 return "connected"
 
             def list_devices(self) -> list[Device]:
-                # Another ready device exists, but it must never be selected.
+                # 存在另一台就绪设备，但它绝不能被选中。
                 return [Device("emulator-5556", "device")]
 
         adb = OtherReadyAdb()
@@ -886,14 +1036,16 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 0.001,
             "mumu_poll_interval_seconds": 0,
         }
 
         with patch("free_app.mumu.MuMuController", return_value=controller):
-            with self.assertRaisesRegex(AdbError, "等待 MuMu ADB 设备超时: 127.0.0.1:16416"):
+            with self.assertRaisesRegex(
+                AdbError, "等待 MuMu ADB 设备超时: 127.0.0.1:16416"
+            ):
                 prepare_device(adb, settings)
 
         self.assertEqual(adb.connected, ["127.0.0.1:16416"])
@@ -915,7 +1067,7 @@ class MumuTests(unittest.TestCase):
         )()
         settings = {
             "auto_start_mumu": True,
-            "mumu_vmindex": 1,
+            "mumu_vm_index": 1,
             "mumu_cli_path": "C:/mumu-cli.exe",
             "mumu_start_timeout_seconds": 0,
             "mumu_poll_interval_seconds": 0,

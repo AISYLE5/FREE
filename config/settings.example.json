@@ -1,21 +1,15 @@
 {
   "adb_path": "",
   "mumu_cli_path": "",
-  "mumu_vmindex": 0,
+  "mumu_vm_index": 0,
   "auto_start_mumu": true,
   "close_mumu_after_run": false,
   "close_mumu_app_after_run": false,
-  "mumu_start_timeout_seconds": 90.0,
-  "mumu_poll_interval_seconds": 1.0,
-  "mumu_command_timeout_seconds": 30.0,
+  "mumu_start_timeout_seconds": 30,
+  "mumu_poll_interval_seconds": 3,
+  "mumu_command_timeout_seconds": 10,
   "cleanup_after_task": true,
-  "cleanup_delay_seconds": 3.0,
-  "cleanup_packages": [
-    "tv.danmaku.bili",
-    "com.tencent.mobileqq",
-    "com.max.xiaoheihe",
-    "com.hanser.club"
-  ],
+  "cleanup_delay_seconds": 5,
   "task_order": [
     "hanserclub",
     "xiaoheihe",
@@ -25,10 +19,7 @@
   ],
   "qq_group_name": "",
   "mumu_directory": "",
-  "command_timeout_seconds": 15.0,
-  "poll_interval_seconds": 0.5,
-  "screenshot_save_level": "key",
-  "log_output_level": "all",
+  "command_timeout_seconds": 10,
   "log_directory": "logs",
   "screenshot_directory": "screenshots",
   "ocr_model_directory": "models",
@@ -38,7 +29,7 @@
     "enabled": false,
     "smtp_host": "smtp.qq.com",
     "smtp_port": 465,
-    "security": "ssl",
+    "smtp_security": "ssl",
     "smtp_username": "",
     "smtp_password": "",
     "recipients": [],
@@ -48,10 +39,10 @@
       "failed",
       "stopped"
     ],
-    "timeout_seconds": 30
+    "smtp_timeout_seconds": 30
   },
-  "log_max_files": 10,
-  "screenshot_max_files": 20,
+  "max_log_files": 10,
+  "max_screenshot_files": 20,
   "cleanup_mode": "recycle",
   "task_execution_counts": {
     "hanserclub": 1,
@@ -60,5 +51,6 @@
     "bilibili_pts": 1,
     "bilibili_share": 1
   },
-  "ocr_download_source": "auto"
+  "ocr_download_source": "auto",
+  "log_foreground_package": false
 }

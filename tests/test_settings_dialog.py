@@ -7,18 +7,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from free_app.ocr_models import DownloadCancelled
+from free_app.settings_dialog import (
+    ModelDownloadWorker,
+    SettingsComboBox,
+    SettingsDialog,
+    _build_confirm_message_box,
+)
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
-from free_app.ocr_models import DownloadCancelled
-from free_app.settings_dialog import ModelDownloadWorker, SettingsComboBox, SettingsDialog
-from free_app.settings_dialog import _build_confirm_message_box
-
 
 class SettingsDialogTests(unittest.TestCase):
     def _make_dialog(self, base: Path) -> SettingsDialog:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         config_directory = base / "config"
         config_directory.mkdir(exist_ok=True)
         settings_path = config_directory / "settings.json"
@@ -70,8 +73,12 @@ class SettingsDialogTests(unittest.TestCase):
             with self.subTest(signal_name=signal_name):
                 worker = ModelDownloadWorker("PP-OCRv6_small_det", Path("models"))
                 received: list[object] = []
-                getattr(worker, signal_name).connect(lambda *args: received.append(args))
-                with patch("free_app.settings_dialog.download_model", side_effect=error):
+                getattr(worker, signal_name).connect(
+                    lambda *args, received=received: received.append(args)
+                )
+                with patch(
+                    "free_app.settings_dialog.download_model", side_effect=error
+                ):
                     worker.run()
 
                 expected = (
@@ -118,12 +125,20 @@ class SettingsDialogTests(unittest.TestCase):
             base = Path(directory)
             dialog = self._make_dialog(base)
             try:
-                with patch("free_app.settings_dialog.OnnxOcrClient.models_ready", return_value=True), patch(
-                    "free_app.settings_dialog.QFileDialog.getOpenFileName",
-                    return_value=(str(base / "missing.png"), "PNG"),
-                ), patch.object(Path, "read_bytes", side_effect=OSError("image unavailable")), patch(
-                    "free_app.settings_dialog.QMessageBox.warning"
-                ) as warning:
+                with (
+                    patch(
+                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        return_value=True,
+                    ),
+                    patch(
+                        "free_app.settings_dialog.QFileDialog.getOpenFileName",
+                        return_value=(str(base / "missing.png"), "PNG"),
+                    ),
+                    patch.object(
+                        Path, "read_bytes", side_effect=OSError("image unavailable")
+                    ),
+                    patch("free_app.settings_dialog.QMessageBox.warning") as warning,
+                ):
                     image, source = dialog._capture_test_image()
 
                 self.assertIsNone(image)
@@ -141,18 +156,24 @@ class SettingsDialogTests(unittest.TestCase):
                 finished: list[bool] = []
                 dialog.log_message.connect(logs.append)
                 dialog.ocr_test_finished.connect(lambda: finished.append(True))
-                with patch(
-                    "free_app.settings_dialog.OnnxOcrClient.models_ready",
-                    return_value=True,
-                ), patch.object(
-                    dialog,
-                    "_capture_test_image",
-                    return_value=(b"image-data", "测试图片"),
-                ), patch(
-                    "free_app.settings_dialog.OnnxOcrClient.recognize",
-                    return_value=["你好", "世界"],
+                with (
+                    patch(
+                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        return_value=True,
+                    ),
+                    patch.object(
+                        dialog,
+                        "_capture_test_image",
+                        return_value=(b"image-data", "测试图片"),
+                    ),
+                    patch(
+                        "free_app.settings_dialog.OnnxOcrClient.recognize",
+                        return_value=["你好", "世界"],
+                    ),
                 ):
                     dialog._test_ocr()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
 
                 self.assertTrue(any("OCR 测试结果：识别成功" in line for line in logs))
                 self.assertTrue(any("OCR 识别: 你好" in line for line in logs))
@@ -172,18 +193,24 @@ class SettingsDialogTests(unittest.TestCase):
                 finished: list[bool] = []
                 dialog.log_message.connect(logs.append)
                 dialog.ocr_test_finished.connect(lambda: finished.append(True))
-                with patch(
-                    "free_app.settings_dialog.OnnxOcrClient.models_ready",
-                    return_value=True,
-                ), patch.object(
-                    dialog,
-                    "_capture_test_image",
-                    return_value=(b"image-data", "测试图片"),
-                ), patch(
-                    "free_app.settings_dialog.OnnxOcrClient.recognize",
-                    side_effect=RuntimeError("模型推理失败"),
+                with (
+                    patch(
+                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        return_value=True,
+                    ),
+                    patch.object(
+                        dialog,
+                        "_capture_test_image",
+                        return_value=(b"image-data", "测试图片"),
+                    ),
+                    patch(
+                        "free_app.settings_dialog.OnnxOcrClient.recognize",
+                        side_effect=RuntimeError("模型推理失败"),
+                    ),
                 ):
                     dialog._test_ocr()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
 
                 self.assertTrue(any("OCR 测试失败" in line for line in logs))
                 self.assertTrue(any("模型推理失败" in line for line in logs))
@@ -191,26 +218,37 @@ class SettingsDialogTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_refresh_mumu_instances_uses_cli_names_and_preserves_selection(self) -> None:
+    def test_refresh_mumu_instances_uses_cli_names_and_preserves_selection(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             dialog = self._make_dialog(base)
             try:
-                dialog.settings["mumu_vmindex"] = 2
+                dialog.settings["mumu_vm_index"] = 2
                 controller = MagicMock()
                 controller.list_instances.return_value = {0: "0", 2: "Work"}
-                with patch("free_app.settings_dialog.MuMuController", return_value=controller):
+                with patch(
+                    "free_app.settings_dialog.MuMuController", return_value=controller
+                ):
                     dialog._refresh_mumu_instances()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
 
                 self.assertEqual(
-                    [dialog.mumu_vmindex_combo.itemText(i) for i in range(dialog.mumu_vmindex_combo.count())],
+                    [
+                        dialog.mumu_vm_index_combo.itemText(i)
+                        for i in range(dialog.mumu_vm_index_combo.count())
+                    ],
                     ["#0", "#2 Work"],
                 )
-                self.assertEqual(dialog.mumu_vmindex_combo.currentData(), 2)
+                self.assertEqual(dialog.mumu_vm_index_combo.currentData(), 2)
             finally:
                 dialog.deleteLater()
 
-    def test_refresh_mumu_instances_falls_back_to_default_indices_on_cli_error(self) -> None:
+    def test_refresh_mumu_instances_falls_back_to_default_indices_on_cli_error(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             dialog = self._make_dialog(base)
@@ -220,10 +258,12 @@ class SettingsDialogTests(unittest.TestCase):
                     side_effect=ValueError("unexpected"),
                 ):
                     dialog._refresh_mumu_instances()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
 
-                self.assertEqual(dialog.mumu_vmindex_combo.count(), 10)
-                self.assertEqual(dialog.mumu_vmindex_combo.itemData(0), 0)
-                self.assertEqual(dialog.mumu_vmindex_combo.itemData(9), 9)
+                self.assertEqual(dialog.mumu_vm_index_combo.count(), 10)
+                self.assertEqual(dialog.mumu_vm_index_combo.itemData(0), 0)
+                self.assertEqual(dialog.mumu_vm_index_combo.itemData(9), 9)
             finally:
                 dialog.deleteLater()
 
@@ -232,18 +272,32 @@ class SettingsDialogTests(unittest.TestCase):
             base = Path(directory)
             dialog = self._make_dialog(base)
             try:
-                with patch("free_app.settings_dialog.send_run_notification", return_value=True) as send, patch(
-                    "free_app.settings_dialog.QMessageBox.information"
-                ) as information:
+                with (
+                    patch(
+                        "free_app.settings_dialog.send_run_notification",
+                        return_value=True,
+                    ) as send,
+                    patch(
+                        "free_app.settings_dialog.QMessageBox.information"
+                    ) as information,
+                ):
                     dialog._send_test_email()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
                 send.assert_called_once()
                 information.assert_called_once()
                 self.assertTrue(dialog.test_button.isEnabled())
 
-                with patch("free_app.settings_dialog.send_run_notification", return_value=False), patch(
-                    "free_app.settings_dialog.QMessageBox.warning"
-                ) as warning:
+                with (
+                    patch(
+                        "free_app.settings_dialog.send_run_notification",
+                        return_value=False,
+                    ),
+                    patch("free_app.settings_dialog.QMessageBox.warning") as warning,
+                ):
                     dialog._send_test_email()
+                    dialog.wait_background_tasks()
+                    QApplication.processEvents()
                 warning.assert_called_once()
                 self.assertTrue(dialog.test_button.isEnabled())
             finally:
@@ -302,8 +356,8 @@ class SettingsDialogTests(unittest.TestCase):
             (base / "config" / "settings.json").write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                         "stale_field": 99,
                         "stale_counts": {"hanserclub": 9},
@@ -311,7 +365,9 @@ class SettingsDialogTests(unittest.TestCase):
                         "stale_enabled": True,
                         "stale_screenshot": True,
                         "stale_device": "emulator-5556",
-                        "email_notification": {"stale_email_field": "stale@example.com"},
+                        "email_notification": {
+                            "stale_email_field": "stale@example.com"
+                        },
                     },
                     ensure_ascii=False,
                 ),
@@ -320,6 +376,42 @@ class SettingsDialogTests(unittest.TestCase):
             dialog = self._make_dialog(base)
             try:
                 self.assertFalse(dialog._has_unsaved_changes())
+            finally:
+                dialog.deleteLater()
+
+    def test_refresh_values_rebuilds_execution_count_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                self.assertNotIn("brand_new_task", dialog._task_execution_combos)
+                (base / "config" / "tasks" / "brand_new_task.json").write_text(
+                    json.dumps(
+                        {
+                            "id": "brand_new_task",
+                            "name": "新任务",
+                            "package": "brand.new",
+                            "actions": [{"type": "wait", "seconds": 1}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                dialog.refresh_values()
+                self.assertIn("brand_new_task", dialog._task_execution_combos)
+            finally:
+                dialog.deleteLater()
+
+    def test_security_switch_keeps_manually_typed_default_port(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                # 模拟用户手动输入 465（与 SSL 默认值相同）后切换安全方式：
+                dialog._smtp_port_edited = False
+                dialog.smtp_port.textEdited.emit("465")
+                dialog.smtp_security.setCurrentIndex(1)  # 安全方式：STARTTLS
+                self.assertEqual(dialog.smtp_port.text(), "465")
             finally:
                 dialog.deleteLater()
 
@@ -348,8 +440,31 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             try:
-                dialog.close_mumu_app_after_run.setChecked(True)
+                dialog.close_mumu_app_after_run.setCurrentIndex(0)
                 self.assertTrue(dialog._has_unsaved_changes())
+            finally:
+                dialog.deleteLater()
+
+    def test_refresh_values_restores_stored_settings_after_discard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "config").mkdir()
+            (base / "config" / "settings.json").write_text(
+                json.dumps({"qq_group_name": "转发群"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            dialog = self._make_dialog(base)
+            try:
+                self.assertEqual(dialog.qq_group_name_edit.text(), "转发群")
+
+                # 用户清空内容后放弃（不保存）——重新打开必须恢复配置值，
+                # 而不是继续显示被删后的空状态。
+                dialog.qq_group_name_edit.clear()
+                self.assertTrue(dialog._has_unsaved_changes())
+
+                dialog.refresh_values()
+                self.assertEqual(dialog.qq_group_name_edit.text(), "转发群")
+                self.assertFalse(dialog._has_unsaved_changes())
             finally:
                 dialog.deleteLater()
 
@@ -368,9 +483,12 @@ class SettingsDialogTests(unittest.TestCase):
             dialog = self._make_dialog(base)
             try:
                 dialog.cleanup_mode_combo.setCurrentIndex(1)
-                with patch("free_app.settings_dialog.confirm_dialog", return_value=True), patch(
-                    "free_app.settings_dialog.QMessageBox.information"
-                ) as information:
+                with (
+                    patch("free_app.settings_dialog.confirm_dialog", return_value=True),
+                    patch(
+                        "free_app.settings_dialog.QMessageBox.information"
+                    ) as information,
+                ):
                     dialog._clear_output_files("logs")
 
                 self.assertFalse(log_file.exists())
@@ -403,7 +521,9 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             dialog.smtp_host.setText("smtp.example.com")
-            with patch.object(SettingsDialog, "_confirm_discard", return_value=True) as confirm:
+            with patch.object(
+                SettingsDialog, "_confirm_discard", return_value=True
+            ) as confirm:
                 dialog.reject()
             confirm.assert_called_once()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
@@ -418,8 +538,10 @@ class SettingsDialogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
-            dialog.log_output_level_combo.setCurrentIndex(1)
-            with patch.object(SettingsDialog, "_confirm_discard", return_value=False) as confirm:
+            dialog.max_log_files_edit.setText("88")
+            with patch.object(
+                SettingsDialog, "_confirm_discard", return_value=False
+            ) as confirm:
                 dialog.reject()
             confirm.assert_called_once()
             self.assertEqual(dialog.result(), 0)
@@ -441,9 +563,12 @@ class SettingsDialogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
-            with patch("free_app.settings_dialog.confirm_dialog", return_value=False) as confirm, patch(
-                "free_app.settings_dialog.delete_model"
-            ) as delete:
+            with (
+                patch(
+                    "free_app.settings_dialog.confirm_dialog", return_value=False
+                ) as confirm,
+                patch("free_app.settings_dialog.delete_model") as delete,
+            ):
                 dialog._delete_model("PP-OCRv6_small_rec")
             confirm.assert_called_once()
             delete.assert_not_called()
@@ -468,9 +593,11 @@ class SettingsDialogTests(unittest.TestCase):
                 shutil.rmtree(root / name)
                 return root / name
 
-            with patch("free_app.settings_dialog.confirm_dialog", return_value=True), patch(
-                "free_app.settings_dialog.delete_model", side_effect=fake_delete
-            ), patch("free_app.settings_dialog.QMessageBox.information"):
+            with (
+                patch("free_app.settings_dialog.confirm_dialog", return_value=True),
+                patch("free_app.settings_dialog.delete_model", side_effect=fake_delete),
+                patch("free_app.settings_dialog.QMessageBox.information"),
+            ):
                 dialog._delete_model("PP-OCRv6_small_det")
 
             self.assertFalse(radio.isChecked())
@@ -498,9 +625,11 @@ class SettingsDialogTests(unittest.TestCase):
                 shutil.rmtree(root / name)
                 return root / name
 
-            with patch("free_app.settings_dialog.confirm_dialog", return_value=True), patch(
-                "free_app.settings_dialog.delete_model", side_effect=fake_delete
-            ), patch("free_app.settings_dialog.QMessageBox.information"):
+            with (
+                patch("free_app.settings_dialog.confirm_dialog", return_value=True),
+                patch("free_app.settings_dialog.delete_model", side_effect=fake_delete),
+                patch("free_app.settings_dialog.QMessageBox.information"),
+            ):
                 dialog._delete_model("PP-OCRv6_small_det")
 
             self.assertTrue(tiny.isChecked())
@@ -581,7 +710,9 @@ class SettingsDialogTests(unittest.TestCase):
             (model_dir / "inference.onnx").write_bytes(b"x")
             dialog = self._make_dialog(base)
             radio = dialog._model_radios["PP-OCRv6_small_det"]
-            self.assertFalse(radio.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+            self.assertFalse(
+                radio.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            )
             dialog.deleteLater()
 
     def test_toggle_model_action_cancels_when_downloading(self) -> None:
@@ -594,9 +725,10 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             dialog._download_threads["PP-OCRv6_tiny_det"] = object()
-            with patch.object(dialog, "_cancel_download") as cancel, patch.object(
-                dialog, "_start_download"
-            ) as start:
+            with (
+                patch.object(dialog, "_cancel_download") as cancel,
+                patch.object(dialog, "_start_download") as start,
+            ):
                 dialog._toggle_model_action("PP-OCRv6_tiny_det")
             cancel.assert_called_once_with("PP-OCRv6_tiny_det")
             start.assert_not_called()
@@ -620,7 +752,9 @@ class SettingsDialogTests(unittest.TestCase):
             dialog._cancel_download("PP-OCRv6_tiny_det")
 
             worker.cancel.assert_called_once()
-            self.assertEqual(dialog._model_action["PP-OCRv6_tiny_det"].text(), "取消中…")
+            self.assertEqual(
+                dialog._model_action["PP-OCRv6_tiny_det"].text(), "取消中…"
+            )
             dialog.deleteLater()
 
     def test_refresh_model_status_detects_newly_installed_model(self) -> None:
@@ -671,7 +805,10 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             self.assertEqual(
-                [dialog.smtp_security.itemData(i) for i in range(dialog.smtp_security.count())],
+                [
+                    dialog.smtp_security.itemData(i)
+                    for i in range(dialog.smtp_security.count())
+                ],
                 ["ssl", "starttls"],
             )
             dialog.smtp_port.setText("")
@@ -702,7 +839,7 @@ class SettingsDialogTests(unittest.TestCase):
                     {
                         "email_notification": {
                             "smtp_port": 2525,
-                            "security": "starttls",
+                            "smtp_security": "starttls",
                         }
                     },
                     ensure_ascii=False,
@@ -734,8 +871,8 @@ class SettingsDialogTests(unittest.TestCase):
             (base / "config" / "settings.json").write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                     },
                     ensure_ascii=False,
@@ -744,16 +881,15 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             collected = dialog._collect_settings()
-            self.assertEqual(collected["log_max_files"], 5)
-            self.assertEqual(collected["screenshot_save_level"], "key")
-            self.assertEqual(collected["screenshot_max_files"], 5)
+            self.assertEqual(collected["max_log_files"], 5)
+            self.assertEqual(collected["max_screenshot_files"], 5)
             self.assertEqual(collected["cleanup_mode"], "recycle")
-            self.assertEqual(collected["mumu_vmindex"], 0)
+            self.assertEqual(collected["mumu_vm_index"], 0)
             self.assertTrue(collected["task_execution_counts"])
             self.assertEqual(collected["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
 
-    def test_screenshot_save_level_loads_saves_and_detects_changes(self) -> None:
+    def test_screenshot_save_level_is_no_longer_editable_or_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             (base / "config").mkdir()
@@ -764,13 +900,35 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             try:
-                self.assertEqual(dialog.screenshot_save_level_combo.currentData(), "all")
+                self.assertFalse(hasattr(dialog, "screenshot_save_level_combo"))
                 self.assertFalse(dialog._has_unsaved_changes())
-                dialog.screenshot_save_level_combo.setCurrentIndex(0)
-                self.assertTrue(dialog._has_unsaved_changes())
+                collected = dialog._collect_settings()
+                self.assertNotIn("screenshot_save_level", collected)
                 dialog._save()
                 saved = json.loads(settings_path.read_text(encoding="utf-8"))
-                self.assertEqual(saved["screenshot_save_level"], "key")
+                self.assertNotIn("screenshot_save_level", saved)
+            finally:
+                dialog.deleteLater()
+
+    def test_screenshot_limit_field_is_not_affected_by_stale_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "config").mkdir()
+            settings_path = base / "config" / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {"screenshot_save_level": "all", "max_screenshot_files": 5},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            dialog = self._make_dialog(base)
+            try:
+                self.assertTrue(dialog.max_screenshot_files_edit.isEnabled())
+                self.assertEqual(dialog.max_screenshot_files_edit.text(), "5")
+                self.assertFalse(dialog._has_unsaved_changes())
+                dialog.max_screenshot_files_edit.setText("999")
+                self.assertTrue(dialog._has_unsaved_changes())
             finally:
                 dialog.deleteLater()
 
@@ -785,7 +943,9 @@ class SettingsDialogTests(unittest.TestCase):
             )
             dialog = self._make_dialog(base)
             try:
-                self.assertEqual(dialog.download_source_combo.currentData(), "modelscope")
+                self.assertEqual(
+                    dialog.download_source_combo.currentData(), "modelscope"
+                )
                 self.assertFalse(dialog._has_unsaved_changes())
                 dialog.download_source_combo.setCurrentIndex(0)
                 self.assertTrue(dialog._has_unsaved_changes())
@@ -796,7 +956,9 @@ class SettingsDialogTests(unittest.TestCase):
                 dialog.deleteLater()
 
     def test_model_download_worker_passes_selected_source(self) -> None:
-        worker = ModelDownloadWorker("PP-OCRv6_small_det", Path("models"), "huggingface")
+        worker = ModelDownloadWorker(
+            "PP-OCRv6_small_det", Path("models"), "huggingface"
+        )
         with patch("free_app.settings_dialog.download_model") as download:
             worker.run()
         download.assert_called_once()
@@ -807,7 +969,9 @@ class SettingsDialogTests(unittest.TestCase):
             base = Path(directory)
             (base / "config").mkdir()
             settings_path = base / "config" / "settings.json"
-            settings_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+            settings_path.write_text(
+                json.dumps({}, ensure_ascii=False), encoding="utf-8"
+            )
             dialog = self._make_dialog(base)
             dialog.mumu_directory_edit.setText("")
             dialog._task_execution_combos["hanserclub"].setValue(4)
@@ -816,11 +980,27 @@ class SettingsDialogTests(unittest.TestCase):
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["email_notification"]["smtp_username"], "new@qq.com")
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 4)
-            self.assertEqual(saved["screenshot_save_level"], "key")
+            self.assertNotIn("screenshot_save_level", saved)
             self.assertIn("smtp_password", saved["email_notification"])
             self.assertEqual(saved["mumu_directory"], "")
             self.assertEqual(saved["qq_group_name"], "")
             self.assertFalse((base / "config" / "settings.local.json").exists())
+            dialog.deleteLater()
+
+    def test_save_persists_auto_start_mumu_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "config").mkdir()
+            settings_path = base / "config" / "settings.json"
+            settings_path.write_text(
+                json.dumps({"auto_start_mumu": True}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            dialog = self._make_dialog(base)
+            dialog.auto_start_mumu.setCurrentIndex(1)  # 关
+            dialog._save()
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertIs(saved["auto_start_mumu"], False)
             dialog.deleteLater()
 
     def test_save_writes_only_native_fields(self) -> None:
@@ -831,8 +1011,8 @@ class SettingsDialogTests(unittest.TestCase):
             settings_path.write_text(
                 json.dumps(
                     {
-                        "log_max_files": 5,
-                        "screenshot_max_files": 5,
+                        "max_log_files": 5,
+                        "max_screenshot_files": 5,
                         "cleanup_mode": "recycle",
                         "stale_field": "x",
                     },
@@ -846,7 +1026,7 @@ class SettingsDialogTests(unittest.TestCase):
 
             self.assertNotIn("stale_field", saved)
             self.assertNotIn("stale_email_field", saved["email_notification"])
-            self.assertEqual(saved["log_max_files"], 5)
+            self.assertEqual(saved["max_log_files"], 5)
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
 

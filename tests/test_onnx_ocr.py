@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
-
 from free_app.ocr_models import OcrError
 from free_app.onnx_ocr import (
     OnnxOcrClient,
@@ -49,7 +48,9 @@ class OnnxOcrTests(unittest.TestCase):
         image = np.zeros((20, 20, 3), dtype=np.uint8)
         _, encoded = cv2.imencode(".png", image)
         with tempfile.TemporaryDirectory() as directory:
-            client = OnnxOcrClient(Path(directory), "PP-OCRv6_small_det", "PP-OCRv6_small_rec")
+            client = OnnxOcrClient(
+                Path(directory), "PP-OCRv6_small_det", "PP-OCRv6_small_rec"
+            )
             with self.assertRaisesRegex(OcrError, "模型未就绪"):
                 client.recognize(encoded.tobytes())
 
@@ -154,13 +155,13 @@ class OnnxOcrTests(unittest.TestCase):
         ):
             _disable_onnxruntime_cache()
 
-            # Cached models are never considered valid again.
+            # 已缓存的模型不再被视为有效。
             self.assertFalse(
                 fake_predict_base._cache_is_current(Path("model"), Path("cache"))
             )
 
-            # Session creation keeps in-memory optimization but never sets
-            # optimized_model_filepath, so nothing is written to disk.
+            # 创建会话时保留内存内优化，但绝不设置
+            # optimized_model_filepath，因此不会向磁盘写任何内容。
             onnxruntime = MagicMock()
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL = 99
             onnxruntime.SessionOptions.return_value = options = types.SimpleNamespace()
@@ -184,12 +185,10 @@ class OnnxOcrTests(unittest.TestCase):
                 providers=["CPUExecutionProvider"],
             )
 
-            # The cache path helper must not create the cache directory.
+            # 缓存路径辅助函数不得创建缓存目录。
             with tempfile.TemporaryDirectory() as directory:
                 cache_root = Path(directory)
-                with patch(
-                    "free_app.onnx_ocr.Path.cwd", return_value=cache_root
-                ):
+                with patch("free_app.onnx_ocr.Path.cwd", return_value=cache_root):
                     path = fake_predict_base._model_cache_path(
                         "models/det/inference.onnx",
                         "onnxruntime",
@@ -202,7 +201,7 @@ class OnnxOcrTests(unittest.TestCase):
                     )
                     self.assertFalse(assert_path.exists())
 
-            # Idempotent: a second call keeps the same replacement methods.
+            # 幂等：第二次调用仍保留同样的替换方法。
             original = FakePredictBase._create_onnxruntime_session
             path_helper = fake_predict_base._model_cache_path
             _disable_onnxruntime_cache()
@@ -216,10 +215,10 @@ class OnnxOcrTests(unittest.TestCase):
         modules.pop("onnxocr.predict_base", None)
         modules["onnxocr"] = package
         with patch.dict(sys.modules, modules):
-            # No onnxocr.predict_base exists: the patch must not raise and
-            # must not touch anything else.
+            # 不存在 onnxocr.predict_base：补丁不得抛异常，
+            # 也不得改动其他任何东西。
             _disable_onnxruntime_cache()
-        # The patched stub is gone again: nothing leaked into a real module.
+        # 补丁桩已再次消失：没有泄漏到真实模块中。
         self.assertNotIn("onnxocr.predict_base", sys.modules)
 
 

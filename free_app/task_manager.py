@@ -1,14 +1,15 @@
-"""Task manager panel: edit tasks, compound action library, and preview JSON."""
+"""任务管理页：编辑任务、复合动作库与 JSON 预览。"""
 
 from __future__ import annotations
 
-import json
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -17,73 +18,108 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTabWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from . import styles as _s
 from .action_editor_dialogs import (
     ActionEditorWidget,
     ActionListEditorWidget,
 )
 from .action_schema import COMPOUND_TYPE, describe_action, validate_action_params
 from .adb import AdbClient
+from .background_task import BackgroundTaskOwner
 from .config import (
     expand_action_for_run,
+    load_action_library,
     load_json,
     load_settings,
-    load_task_directory,
-    save_settings,
+    load_task_directory_raw,
+    update_settings,
 )
-from .helpers import deep_copy
-from .logging_utils import format_log_line
+from .helpers import deep_copy, write_json_file
 from .message_box import QMessageBox
-from .models import Action, RunResult, RunStatus, TaskDefinition
+from .models import Action, RunResult, TaskDefinition
 from .mumu import connect_to_mumu
 from .settings_dialog import SettingsComboBox, confirm_dialog
-from .trash import TrashError, send_to_recycle_bin
-from .ui_automation import UiSnapshot, text_matches_exact, text_matches_fuzzy
-
-from . import styles as _s
-
-
-def _ui_tree_search_matches(label: str, resource_id: str, needle: str, mode: str) -> bool:
-    """Filter UI tree rows with exact or fuzzy (% / _ / substring) matching."""
-
-    needle = needle.strip()
-    if not needle:
-        return True
-    if mode == "exact":
-        return text_matches_exact(label, needle) or resource_id.strip() == needle
-    return text_matches_fuzzy(label, needle) or needle.lower() in resource_id.lower()
+from .task_viewers import (
+    JsonViewerWidget,
+    RunViewerWidget,
+    UiTreeDumpWidget,
+    UiTreeDumpWorker,
+)
+from .trash import TrashError, remove_path
+from .ui_automation import UiSnapshot
 
 
-def _apply_ui_tree_filter(owner: QWidget) -> None:
-    """Hide UI-tree rows that do not match the current search terms.
+@dataclass
+class _EmbeddedNavigator:
+    """内嵌编辑器与内嵌查看器的导航状态。
 
-    Used by :class:`UiTreeDumpWidget`, which
-    expose the same ``search_edit`` / ``search_mode_combo`` / ``_all_items``
-    attributes.
+    以前散落在 TaskManagerWidget 的多个属性上，任何一处忘记复位都会让
+    提交/返回落到错误的面板。这里统一维护：
+    - ``mode`` / ``index`` / ``return_panel`` / ``original``：一次内嵌动作
+      或步骤编辑会话；
+    - ``branch_stack``：分支步骤编辑的父级上下文栈；
+    - ``previous_panel``：内嵌查看器（JSON / UI 树）的返回面板。
     """
 
-    needle = owner.search_edit.text().strip()
-    mode = str(owner.search_mode_combo.currentData() or "fuzzy")
-    for item in owner._all_items:
-        matched = (
-            not needle
-            or _ui_tree_search_matches(item.text(0), item.text(1), needle, mode)
-        )
-        item.setHidden(not matched)
+    mode: str | None = None  # 取值：task_action / compound_step / branch_step
+    index: int = -1
+    return_panel: QWidget | None = None
+    original: dict[str, Any] | None = None
+    previous_panel: QWidget | None = None
+    branch_stack: list[dict[str, Any]] = field(default_factory=list)
+
+    def close_editor(self) -> QWidget | None:
+        """结束当前编辑会话，返回应回到的面板（None 时由调用方兜底）。"""
+
+        return_panel = self.return_panel
+        self.mode = None
+        self.index = -1
+        self.return_panel = None
+        self.original = None
+        return return_panel
+
+
+@dataclass
+class _EntryPanelState:
+    """一个名称列表页（任务 / 复合任务）的选中与草稿状态。"""
+
+    selected: str | None = None
+    creating: bool = False
+    unsaved: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _EntryListPanel:
+    """名称列表页的共享挂点。
+
+    任务列表与复合任务列表的刷新、选中切换、重复点击聚焦和"新建"流程
+    完全同构，差异只在控件、数据源与编辑器回调；用这一个规格对象驱动
+    共享实现，避免两套平行方法各自演化。
+    """
+
+    list_widget: QListWidget
+    stack_index: int  # 选中后编辑器所在的 editor_stack 页
+    steps_list: QListWidget  # 点击已选中行时清空选择的步骤列表
+    state: _EntryPanelState
+    entries: Callable[[], dict[str, dict[str, Any]]]
+    load_editor: Callable[[dict[str, Any]], None]
+    clear_editor: Callable[[], None]
+    label_for: Callable[[str, dict[str, Any]], str]
+    switch_label: str  # 未保存切换确认文案，如 "切换任务"
+    new_label: str  # "新建任务"
+    on_empty: Callable[[], None]  # 列表为空且无选中时的兜底
 
 
 class _TaskToast(QFrame):
-    """Small non-modal notification used for short-lived task-manager errors."""
+    """任务管理页短暂错误提示用的非模态通知。"""
 
     def __init__(self, parent: QWidget, title: str, message: str) -> None:
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
@@ -156,463 +192,78 @@ class _TaskToast(QFrame):
             )
 
 
-class _UiTreeDumpWorker(QObject):
-    """Run the complete UI-tree ADB workflow away from the GUI thread."""
+class TaskManagerWidget(BackgroundTaskOwner, QWidget):
+    """完整的任务管理面板：任务、动作编辑器与复合动作库。"""
 
-    succeeded = Signal(object, object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, settings: dict[str, Any]) -> None:
-        super().__init__()
-        self._settings = dict(settings)
-
-    def run(self) -> None:
-        try:
-            adb = connect_to_mumu(self._settings)
-            xml = adb.dump_ui()
-            snapshot = UiSnapshot.from_xml(xml)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(snapshot, adb)
-        finally:
-            self.finished.emit()
-
-
-class JsonViewerWidget(QWidget):
-    """Embeddable read-only viewer for a task or compound action JSON payload."""
-
-    closed = Signal()
-
-    def __init__(self, parent: QWidget | None, data: Any) -> None:
-        super().__init__(parent)
-        self.setStyleSheet(self._style_sheet())
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
-        self.editor = QPlainTextEdit()
-        self.editor.setReadOnly(True)
-        self.editor.setFont(QFont("Microsoft YaHei", 10))
-        self.editor.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
-        layout.addWidget(self.editor, 1)
-
-    def load_data(self, data: Any) -> None:
-        """Load new data into the viewer."""
-        self.editor.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
-
-    @staticmethod
-    def _style_sheet() -> str:
-        return (
-            "\n"
-            "            QWidget { background: transparent; color: #193331; }\n"
-            "            QPlainTextEdit {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #cbdcd6;\n"
-            "                border-radius: 8px;\n"
-            "                padding: 10px;\n"
-            "                color: #244340;\n"
-            "                selection-background-color: #cce8e0;\n"
-            "                font-size: 13px;\n"
-            "            }\n"
-            + _s.CARD_TITLE_QSS
-            + _s.OCR_FEEDBACK_QSS
-            + _s.MESSAGE_BOX_QSS
-            + _s.COMMON_CONTROLS_QSS
-            + "        "
-        )
-
-
-class RunViewerWidget(QWidget):
-    """Embeddable output panel for single-action debug runs."""
-
-    closed = Signal()
-    stop_requested = Signal()
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setStyleSheet(self._style_sheet())
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
-
-        header = QHBoxLayout()
-        header.setSpacing(10)
-        title_label = QLabel("运行输出")
-        title_label.setObjectName("settingsCardTitle")
-        header.addWidget(title_label)
-        self.status_label = QLabel("待命")
-        self.status_label.setObjectName("runStatusLabel")
-        header.addWidget(self.status_label)
-        header.addStretch(1)
-        self.stop_button = QPushButton("停止")
-        self.stop_button.setObjectName("runStopButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_requested.emit)
-        header.addWidget(self.stop_button)
-        layout.addLayout(header)
-
-        self.progress_label = QLabel("准备运行")
-        self.progress_label.setObjectName("settingsOcrFeedback")
-        layout.addWidget(self.progress_label)
-
-        self.log_edit = QPlainTextEdit()
-        self.log_edit.setObjectName("runLogEdit")
-        self.log_edit.setReadOnly(True)
-        self.log_edit.setFont(QFont("Microsoft YaHei", 10))
-        layout.addWidget(self.log_edit, 1)
-
-        hint = QLabel("调试运行不会自动清理 App 或关闭 MuMu。")
-        hint.setObjectName("settingsOcrFeedback")
-        layout.addWidget(hint)
-
-    def start_run(self, task_name: str) -> None:
-        """Reset the panel and mark the run as active."""
-        self.status_label.setText("运行中")
-        self._paint_status("#0c6e63")
-        self.progress_label.setText(f"{task_name or '单动作测试'} · 准备连接设备")
-        self.log_edit.clear()
-        self.stop_button.setEnabled(True)
-
-    def append_log(self, message: str) -> None:
-        """Append one timestamped log line and keep the view scrolled down."""
-        self.log_edit.appendPlainText(format_log_line(message))
-        scroll_bar = self.log_edit.verticalScrollBar()
-        scroll_bar.setValue(scroll_bar.maximum())
-
-    def set_progress(self, index: int, total: int, description: str) -> None:
-        """Update the current step description."""
-        self.progress_label.setText(f"当前动作 {index} / {total} · {description}")
-
-    def finish_run(self, result: RunResult) -> None:
-        """Show the final status and result summary in the embedded panel."""
-        self.stop_button.setEnabled(False)
-        if result.status == RunStatus.SUCCESS:
-            self.status_label.setText("成功")
-            self._paint_status("#0c6e63")
-        elif result.status == RunStatus.STOPPED:
-            self.status_label.setText("已停止")
-            self._paint_status("#95651b")
-        else:
-            self.status_label.setText("失败")
-            self._paint_status("#a3403b")
-        self.progress_label.setText(f"当前动作 {result.completed_steps} / {result.total_steps}")
-        error = f"，错误: {result.error}" if result.error else ""
-        self.append_log(
-            f"运行结束: status={result.status.value}, "
-            f"completed={result.completed_steps}/{result.total_steps}{error}"
-        )
-
-    def abort_run(self, message: str) -> None:
-        """Mark the panel as not started after a preparation failure."""
-        self.stop_button.setEnabled(False)
-        self.status_label.setText("未运行")
-        self._paint_status("#a3403b")
-        self.progress_label.setText("设备准备失败")
-        self.append_log(message)
-
-    def _paint_status(self, color: str) -> None:
-        self.status_label.setStyleSheet(
-            f"font-size: 13px; font-weight: 700; color: {color}; "
-            "background: #ffffff; border: 1px solid #cbdcd6; "
-            "border-radius: 6px; padding: 7px 14px;"
-        )
-
-    @staticmethod
-    def _style_sheet() -> str:
-        return (
-            "\n"
-            "            QWidget { background: transparent; color: #193331; }\n"
-            "            QPlainTextEdit#runLogEdit {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #cbdcd6;\n"
-            "                border-radius: 8px;\n"
-            "                padding: 10px;\n"
-            "                color: #244340;\n"
-            "                selection-background-color: #cce8e0;\n"
-            "                font-size: 13px;\n"
-            "            }\n"
-            + _s.CARD_TITLE_QSS
-            + _s.OCR_FEEDBACK_QSS
-            + "            QPushButton#runStopButton {\n"
-            "                color: #ffffff;\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d6534d, stop:1 #bd403b);\n"
-            "                border: none;\n"
-            "                font-weight: 700;\n"
-            "            }\n"
-            "            QPushButton#runStopButton:disabled {\n"
-            "                color: #9aa9a7;\n"
-            "                background: #e9eeec;\n"
-            "                border: 1px solid #dce5e2;\n"
-            "            }\n"
-            "            QPushButton#runStopButton:hover {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #bd403b, stop:1 #a93632);\n"
-            "            }\n"
-            + _s.MESSAGE_BOX_QSS
-            + _s.COMMON_CONTROLS_QSS
-            + "        "
-        )
-
-
-class UiTreeDumpWidget(QWidget):
-    """Embeddable UI tree dump widget for debugging; insert a click action from a node."""
-
-    action_inserted = Signal(dict)
-    try_click_requested = Signal(int, int, str)
-    closed = Signal()
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setStyleSheet(self._style_sheet())
-        self._snapshot: UiSnapshot | None = None
-        self._all_items: list[QTreeWidgetItem] = []
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
-        title_label = QLabel("UI 树查看器")
-        title_label.setObjectName("settingsCardTitle")
-        layout.addWidget(title_label)
-        search_row = QHBoxLayout()
-        search_row.setSpacing(8)
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("搜索文本或 resource-id…")
-        self.search_edit.textChanged.connect(self._apply_filter)
-        self.search_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        search_row.addWidget(self.search_edit, 1)
-        self.search_mode_combo = SettingsComboBox()
-        self.search_mode_combo.addItem("模糊", "fuzzy")
-        self.search_mode_combo.addItem("精确", "exact")
-        self.search_mode_combo.setCurrentIndex(self.search_mode_combo.findData("fuzzy"))
-        self.search_mode_combo.currentIndexChanged.connect(self._apply_filter)
-        self.search_mode_combo.setFixedWidth(88)
-        search_row.addWidget(self.search_mode_combo)
-        self.try_click_button = QPushButton("尝试点击")
-        self.try_click_button.setObjectName("settingsTryButton")
-        self.try_click_button.setToolTip("在模拟器中点击当前选中节点的中心")
-        self.try_click_button.clicked.connect(self._try_click)
-        self.try_click_button.setEnabled(False)
-        search_row.addWidget(self.try_click_button)
-        self.insert_mode_combo = SettingsComboBox()
-        self.insert_mode_combo.addItem("ID", "resource_id")
-        self.insert_mode_combo.addItem("文本", "text")
-        search_row.addWidget(self.insert_mode_combo)
-        self.insert_button = QPushButton("插入点击动作")
-        self.insert_button.setObjectName("settingsTestButton")
-        self.insert_button.clicked.connect(self._insert_click)
-        search_row.addWidget(self.insert_button)
-        layout.addLayout(search_row)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["文本 / 描述", "resource-id", "坐标"])
-        self.tree.setColumnWidth(0, 280)
-        self.tree.setColumnWidth(1, 280)
-        self.tree.itemDoubleClicked.connect(lambda _item, _column: self._insert_click())
-        layout.addWidget(self.tree, 1)
-        hint = QLabel("选中节点后可先尝试点击，或双击节点生成 click 动作插入任务动作列表。")
-        hint.setObjectName("settingsOcrFeedback")
-        layout.addWidget(hint)
-
-    @staticmethod
-    def _style_sheet() -> str:
-        return (
-            "\n"
-            "            QWidget { background: transparent; color: #193331; }\n"
-            "            QTreeWidget {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #cbdcd6;\n"
-            "                border-radius: 8px;\n"
-            "                color: #244340;\n"
-            "                outline: 0;\n"
-            "            }\n"
-            "            QTreeWidget::item {\n"
-            "                min-height: 28px;\n"
-            "                padding: 4px 8px;\n"
-            "                border: none;\n"
-            "            }\n"
-            "            QTreeWidget::item:selected {\n"
-            "                background: #dff2ed;\n"
-            "                color: #0f625b;\n"
-            "            }\n"
-            "            QTreeWidget::item:hover {\n"
-            "                background: #edf7f4;\n"
-            "            }\n"
-            + _s.CARD_TITLE_QSS
-            + _s.OCR_FEEDBACK_QSS
-            + "            QPushButton#settingsTryButton {\n"
-            "                color: #ffffff;\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b9b8b, stop:1 #137f73);\n"
-            "                border: none;\n"
-            "                font-weight: 700;\n"
-            "            }\n"
-            "            QPushButton#settingsTryButton:hover {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #0e6e64);\n"
-            "            }\n"
-            + _s.MESSAGE_BOX_QSS
-            + _s.COMMON_CONTROLS_QSS
-            + "        "
-        )
-
-    def load_snapshot(self, snapshot: UiSnapshot) -> None:
-        """Load UI snapshot data into the tree."""
-        self._snapshot = snapshot
-        self.tree.clear()
-        self._all_items.clear()
-        self.search_edit.clear()
-        for index, node in enumerate(snapshot.nodes):
-            if not node.clickable:
-                continue
-            label = node.label or ""
-            resource_id = node.resource_id or ""
-            bounds = (
-                f"[{node.bounds.left},{node.bounds.top}][{node.bounds.right},{node.bounds.bottom}]"
-                if node.bounds
-                else ""
-            )
-            item = QTreeWidgetItem([label, resource_id, bounds])
-            item.setData(0, Qt.ItemDataRole.UserRole, index)
-            self.tree.addTopLevelItem(item)
-        self._all_items = []
-        for index in range(self.tree.topLevelItemCount()):
-            tree_item = self.tree.topLevelItem(index)
-            if tree_item is not None:
-                self._all_items.append(tree_item)
-        self.try_click_button.setEnabled(bool(self._all_items))
-
-    def _apply_filter(self, _text: str) -> None:
-        _apply_ui_tree_filter(self)
-
-    def _insert_click(self) -> None:
-        item = self.tree.currentItem()
-        if item is None or self._snapshot is None:
-            return
-        index = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(index, int) or index < 0 or index >= len(self._snapshot.nodes):
-            return
-        node = self._snapshot.nodes[index]
-        mode = self.insert_mode_combo.currentData() or "text"
-        if mode == "resource_id":
-            if not node.resource_id:
-                QMessageBox.information(self, "无法插入", "该节点没有 resource-id，请选择其他插入方式。")
-                return
-            action = {
-                "type": "click",
-                "locate": "ui",
-                "target": "resource_id",
-                "resource_id": node.resource_id,
-                "timeout_seconds": 15,
-            }
-        elif mode == "text":
-            if not node.label:
-                QMessageBox.information(self, "无法插入", "该节点没有文本，请选择其他插入方式。")
-                return
-            action = {
-                "type": "click",
-                "locate": "ui",
-                "target": "text",
-                "text": node.label,
-                "match_mode": "exact",
-                "timeout_seconds": 15,
-            }
-        else:
-            QMessageBox.information(self, "无法插入", "请选择 ID 或文本插入方式。")
-            return
-        self.action_inserted.emit(action)
-
-    def _try_click(self) -> None:
-        if self._snapshot is None:
-            QMessageBox.information(self, "无法尝试点击", "请先抓取 UI 树。")
-            return
-        item = self.tree.currentItem()
-        if item is None:
-            QMessageBox.information(self, "无法尝试点击", "请先选择一个节点。")
-            return
-        index = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(index, int) or index < 0 or index >= len(self._snapshot.nodes):
-            return
-        node = self._snapshot.nodes[index]
-        if not node.bounds:
-            QMessageBox.information(self, "无法尝试点击", "该节点没有可点击坐标。")
-            return
-        x, y = node.bounds.center
-        self.try_click_requested.emit(x, y, node.label)
-
-
-class TaskManagerWidget(QWidget):
-    """Full task management panel: tasks, action editor, compound library."""
-
-    # Maximum nesting of embedded step/action editors that _commit_embedded_editors
-    # must unwind (task -> if branch step -> action -> nested steps).
+    # _commit_embedded_editors 需要逐层退出的内嵌步骤/动作编辑器最大嵌套深度
+    # （任务 -> if 分支步骤 -> 动作 -> 嵌套步骤）。
     _MAX_EMBEDDED_EDITOR_DEPTH = 4
 
     tasks_changed = Signal()
     feedback_requested = Signal(str)
-    run_action_requested = Signal(list, str, str)  # actions, package, task_name
+    run_action_requested = Signal(list, str, str)  # 动作列表、包名、任务名
     run_stop_requested = Signal()
+    # 指针坐标开关失败（后台执行）时通知主窗口回退按钮状态。
+    pointer_location_failed = Signal(bool)
 
     def __init__(self, settings_path: Path, base_directory: Path | None = None):
         super().__init__()
         self.settings_path = settings_path
         self.base_directory = base_directory or settings_path.parent
         self.settings = load_settings(settings_path)
+        self._init_background_tasks()
         self._ui_tree_adb: AdbClient | None = None
         self._ui_tree_thread: QThread | None = None
-        self._ui_tree_worker: _UiTreeDumpWorker | None = None
+        self._ui_tree_worker: UiTreeDumpWorker | None = None
         self._tasks: dict[str, dict[str, Any]] = {}
         self._compound_library: dict[str, dict[str, Any]] = {}
-        self._selected_task: str | None = None
-        self._selected_compound: str | None = None
-        self._creating_task = False
-        self._creating_compound = False
+        self._task_state = _EntryPanelState()
+        self._compound_state = _EntryPanelState()
         self._actions_buffer: list[dict[str, Any]] = []
-        self._params_buffer: list[str] = []
         self._steps_buffer: list[dict[str, Any]] = []
         self._compound_description_buffer = ""
         self._compound_description_present = False
-        self._embedded_editor_mode: str | None = None  # task_action, compound_step, branch_step
-        self._embedded_editor_index: int = -1
-        self._embedded_editor_return_panel: QWidget | None = None
-        self._embedded_previous_panel: QWidget | None = None
+        self._embedded = _EmbeddedNavigator()
         self._task_toast: _TaskToast | None = None
-        self._branch_steps_stack: list[dict[str, Any]] = []
         self._dirty = False
         self._suspend_dirty = False
-        self._embedded_editor_original: dict[str, Any] | None = None
-        self._unsaved_task_ids: set[str] = set()
-        self._unsaved_compound_names: set[str] = set()
         self._active_tab_index = 0
         self._build_ui()
+        self._task_panel = _EntryListPanel(
+            list_widget=self.task_list,
+            stack_index=0,
+            steps_list=self.actions_list,
+            state=self._task_state,
+            entries=lambda: self._tasks,
+            load_editor=self._load_task_editor,
+            clear_editor=self._clear_editor,
+            label_for=lambda key, data: f"{data.get('name', '')}（{key}）",
+            switch_label="切换任务",
+            new_label="新建任务",
+            on_empty=self._clear_editor,
+        )
+        self._compound_panel = _EntryListPanel(
+            list_widget=self.compound_list,
+            stack_index=1,
+            steps_list=self.compound_steps_list,
+            state=self._compound_state,
+            entries=lambda: self._compound_library,
+            load_editor=self._load_compound_editor,
+            clear_editor=self._clear_compound_editor,
+            label_for=lambda key, _data: str(key),
+            switch_label="切换复合任务",
+            new_label="新建复合任务",
+            on_empty=self._clear_compound_selection,
+        )
         self.setStyleSheet(self._style_sheet())
         self.reload()
-    # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        # Keep the editor body flush with the page edges, matching the main
-        # page surface.  The header owns its own horizontal margins.
+        # 让编辑器主体与页面边缘齐平，与主页表面一致；
+        # 头部自管水平边距。
         root.setContentsMargins(0, 8, 0, 0)
         root.setSpacing(0)
-
-        header = QHBoxLayout()
-        header.setSpacing(10)
-        header.addStretch(1)
-        self.copy_package_button = QPushButton("获取包名")
-        self.copy_package_button.setObjectName("settingsTestButton")
-        self.copy_package_button.clicked.connect(self._on_copy_package_clicked)
-        self.copy_package_button.hide()
-        header.addWidget(self.copy_package_button)
-        self.dump_tree_button = QPushButton("抓取 UI 树")
-        self.dump_tree_button.setObjectName("settingsTestButton")
-        self.dump_tree_button.clicked.connect(self._on_dump_tree_clicked)
-        self.dump_tree_button.hide()
-        header.addWidget(self.dump_tree_button)
-        self.view_json_button = QPushButton("查看 JSON")
-        self.view_json_button.setObjectName("settingsTestButton")
-        self.view_json_button.clicked.connect(self._on_view_json_clicked)
-        self.view_json_button.hide()
-        header.addWidget(self.view_json_button)
-        root.addLayout(header)
 
         h_line = QFrame()
         h_line.setObjectName("taskManagerHLine")
@@ -622,7 +273,6 @@ class TaskManagerWidget(QWidget):
         body = QHBoxLayout()
         body.setSpacing(0)
 
-        # ---- left: tabbed lists (tasks / compound actions)
         left_panel = QFrame()
         left_panel.setObjectName("taskManagerLeftPanel")
         left_layout = QVBoxLayout(left_panel)
@@ -639,7 +289,9 @@ class TaskManagerWidget(QWidget):
         task_tab_layout.setSpacing(8)
         self.task_list = QListWidget()
         self.task_list.setObjectName("settingsTaskList")
-        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.task_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.task_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.task_list.currentRowChanged.connect(self._on_task_selected)
         self.task_list.itemClicked.connect(self._on_task_item_clicked)
@@ -652,22 +304,28 @@ class TaskManagerWidget(QWidget):
         compound_tab_layout.setSpacing(8)
         self.compound_list = QListWidget()
         self.compound_list.setObjectName("settingsTaskList")
-        self.compound_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.compound_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.compound_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.compound_list.currentRowChanged.connect(self._on_compound_selected)
         self.compound_list.itemClicked.connect(self._on_compound_item_clicked)
-        self.compound_list.itemDoubleClicked.connect(lambda _item: self._edit_compound())
+        self.compound_list.itemDoubleClicked.connect(
+            lambda _item: self._edit_compound()
+        )
         compound_tab_layout.addWidget(self.compound_list, 1)
         self.left_tabs.addTab(compound_tab, "复合任务")
 
         self.left_tabs.currentChanged.connect(self._on_editor_tab_changed)
         left_layout.addWidget(self.left_tabs, 1)
 
-        # Hidden combo carrying the cleanup mode used by delete/save paths.
+        # 隐藏下拉框，承载删除/保存路径使用的清理方式。
         self.cleanup_mode_combo = SettingsComboBox()
         self.cleanup_mode_combo.addItem("删除至回收站", "recycle")
         self.cleanup_mode_combo.addItem("永久删除", "permanent")
-        self.cleanup_mode_combo.currentIndexChanged.connect(self._on_cleanup_mode_changed)
+        self.cleanup_mode_combo.currentIndexChanged.connect(
+            self._on_cleanup_mode_changed
+        )
         self.cleanup_mode_combo.hide()
 
         left_panel.setFixedWidth(280)
@@ -678,11 +336,9 @@ class TaskManagerWidget(QWidget):
         v_line.setFixedWidth(2)
         body.addWidget(v_line)
 
-        # ---- right: stacked editors (tasks / compound actions)
         self.editor_stack = QStackedWidget()
         self.editor_stack.setObjectName("taskManagerEditors")
 
-        # -- task editor
         editor_panel = QFrame()
         editor_panel.setObjectName("taskManagerEditorPanel")
         editor_layout = QVBoxLayout(editor_panel)
@@ -690,24 +346,30 @@ class TaskManagerWidget(QWidget):
         editor_layout.setSpacing(12)
 
         form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(10)
         self.task_id_edit = QLineEdit()
-        self.task_id_edit.setPlaceholderText("唯一标识，如 bilibili_exp")
+        self.task_id_edit.setPlaceholderText("例如：bilibili_exp")
         self._disable_context_menu(self.task_id_edit)
         self.task_name_edit = QLineEdit()
         self.task_name_edit.setPlaceholderText("任务显示名称")
         self._disable_context_menu(self.task_name_edit)
         self.task_package_edit = QLineEdit()
-        self.task_package_edit.setPlaceholderText("应用包名，如 tv.danmaku.bili")
+        self.task_package_edit.setPlaceholderText("例如：tv.danmaku.bili")
         self._disable_context_menu(self.task_package_edit)
         form.addRow("id", self.task_id_edit)
         form.addRow("名称", self.task_name_edit)
         form.addRow("包名", self.task_package_edit)
-        for field in (self.task_id_edit, self.task_name_edit, self.task_package_edit):
-            field.textChanged.connect(self._mark_dirty)
+        for editor_field in (
+            self.task_id_edit,
+            self.task_name_edit,
+            self.task_package_edit,
+        ):
+            editor_field.textChanged.connect(self._mark_dirty)
         editor_layout.addLayout(form)
 
         actions_header = QHBoxLayout()
@@ -727,7 +389,6 @@ class TaskManagerWidget(QWidget):
         editor_layout.addWidget(self.actions_list, 1)
         self.editor_stack.addWidget(editor_panel)
 
-        # -- compound editor
         compound_editor_panel = QFrame()
         compound_editor_panel.setObjectName("taskManagerEditorPanel")
         compound_editor_layout = QVBoxLayout(compound_editor_panel)
@@ -735,12 +396,16 @@ class TaskManagerWidget(QWidget):
         compound_editor_layout.setSpacing(12)
 
         compound_form = QFormLayout()
-        compound_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        compound_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        compound_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        compound_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
         compound_form.setHorizontalSpacing(14)
         compound_form.setVerticalSpacing(10)
         self.compound_name_edit = QLineEdit()
-        self.compound_name_edit.setPlaceholderText("唯一标识，如 share_group")
+        self.compound_name_edit.setPlaceholderText("例如：share_group")
         self._disable_context_menu(self.compound_name_edit)
         self.compound_name_edit.textChanged.connect(self._mark_dirty)
         compound_form.addRow("名称", self.compound_name_edit)
@@ -757,13 +422,18 @@ class TaskManagerWidget(QWidget):
         self.compound_steps_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.compound_steps_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.compound_steps_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.compound_steps_list.model().rowsMoved.connect(self._on_compound_steps_moved)
-        self.compound_steps_list.currentRowChanged.connect(self._on_step_selection_changed)
-        self.compound_steps_list.itemDoubleClicked.connect(lambda _item: self._edit_step())
+        self.compound_steps_list.model().rowsMoved.connect(
+            self._on_compound_steps_moved
+        )
+        self.compound_steps_list.currentRowChanged.connect(
+            self._on_step_selection_changed
+        )
+        self.compound_steps_list.itemDoubleClicked.connect(
+            lambda _item: self._edit_step()
+        )
         compound_editor_layout.addWidget(self.compound_steps_list, 1)
         self.editor_stack.addWidget(compound_editor_panel)
 
-        # -- embedded action editor
         self.embedded_action_editor_panel = QFrame()
         self.embedded_action_editor_panel.setObjectName("taskManagerEditorPanel")
         embedded_layout = QVBoxLayout(self.embedded_action_editor_panel)
@@ -776,15 +446,12 @@ class TaskManagerWidget(QWidget):
             allow_compound=True,
         )
         self.embedded_action_editor.changed.connect(self._mark_dirty)
-        self.embedded_action_editor.saved.connect(self._on_embedded_editor_saved)
-        self.embedded_action_editor.cancelled.connect(self._on_embedded_editor_cancelled)
         self.embedded_action_editor.nested_steps_edit_requested.connect(
             self._open_branch_steps_editor
         )
         embedded_layout.addWidget(self.embedded_action_editor)
         self.editor_stack.addWidget(self.embedded_action_editor_panel)
 
-        # -- embedded branch steps editor
         self.embedded_branch_steps_editor_panel = QFrame()
         self.embedded_branch_steps_editor_panel.setObjectName("taskManagerEditorPanel")
         branch_steps_layout = QVBoxLayout(self.embedded_branch_steps_editor_panel)
@@ -793,32 +460,34 @@ class TaskManagerWidget(QWidget):
         self.embedded_branch_steps_editor = ActionListEditorWidget(
             self.embedded_branch_steps_editor_panel
         )
-        self.embedded_branch_steps_editor.saved.connect(self._on_branch_steps_saved)
-        self.embedded_branch_steps_editor.cancelled.connect(self._on_branch_steps_cancelled)
-        self.embedded_branch_steps_editor.add_step_requested.connect(self._add_branch_step)
-        self.embedded_branch_steps_editor.edit_step_requested.connect(self._edit_branch_step)
+        self.embedded_branch_steps_editor.add_step_requested.connect(
+            self._add_branch_step
+        )
+        self.embedded_branch_steps_editor.edit_step_requested.connect(
+            self._edit_branch_step
+        )
         branch_steps_layout.addWidget(self.embedded_branch_steps_editor)
         self.editor_stack.addWidget(self.embedded_branch_steps_editor_panel)
 
-        # -- embedded JSON viewer
         self.embedded_json_viewer_panel = QFrame()
         self.embedded_json_viewer_panel.setObjectName("taskManagerEditorPanel")
         json_viewer_layout = QVBoxLayout(self.embedded_json_viewer_panel)
         json_viewer_layout.setContentsMargins(0, 0, 0, 0)
         json_viewer_layout.setSpacing(0)
-        self.embedded_json_viewer = JsonViewerWidget(self.embedded_json_viewer_panel, data={})
-        self.embedded_json_viewer.closed.connect(self._close_embedded_viewer)
+        self.embedded_json_viewer = JsonViewerWidget(
+            self.embedded_json_viewer_panel, data={}
+        )
         json_viewer_layout.addWidget(self.embedded_json_viewer)
         self.editor_stack.addWidget(self.embedded_json_viewer_panel)
 
-        # -- embedded UI tree viewer
         self.embedded_ui_tree_viewer_panel = QFrame()
         self.embedded_ui_tree_viewer_panel.setObjectName("taskManagerEditorPanel")
         ui_tree_viewer_layout = QVBoxLayout(self.embedded_ui_tree_viewer_panel)
         ui_tree_viewer_layout.setContentsMargins(0, 0, 0, 0)
         ui_tree_viewer_layout.setSpacing(0)
-        self.embedded_ui_tree_viewer = UiTreeDumpWidget(self.embedded_ui_tree_viewer_panel)
-        self.embedded_ui_tree_viewer.closed.connect(self._close_embedded_viewer)
+        self.embedded_ui_tree_viewer = UiTreeDumpWidget(
+            self.embedded_ui_tree_viewer_panel
+        )
         self.embedded_ui_tree_viewer.action_inserted.connect(
             self._on_embedded_ui_tree_action_inserted
         )
@@ -828,14 +497,12 @@ class TaskManagerWidget(QWidget):
         ui_tree_viewer_layout.addWidget(self.embedded_ui_tree_viewer)
         self.editor_stack.addWidget(self.embedded_ui_tree_viewer_panel)
 
-        # -- embedded run viewer
         self.embedded_run_viewer_panel = QFrame()
         self.embedded_run_viewer_panel.setObjectName("taskManagerEditorPanel")
         run_viewer_layout = QVBoxLayout(self.embedded_run_viewer_panel)
         run_viewer_layout.setContentsMargins(0, 0, 0, 0)
         run_viewer_layout.setSpacing(0)
         self.embedded_run_viewer = RunViewerWidget(self.embedded_run_viewer_panel)
-        self.embedded_run_viewer.closed.connect(self._close_embedded_viewer)
         self.embedded_run_viewer.stop_requested.connect(self.run_stop_requested.emit)
         run_viewer_layout.addWidget(self.embedded_run_viewer)
         self.editor_stack.addWidget(self.embedded_run_viewer_panel)
@@ -850,9 +517,6 @@ class TaskManagerWidget(QWidget):
         operation_layout = QHBoxLayout()
         operation_layout.setContentsMargins(14, 8, 14, 8)
         operation_layout.setSpacing(8)
-        self.operation_context_label = QLabel("任务操作")
-        self.operation_context_label.setObjectName("taskManagerOperationLabel")
-        self.operation_context_label.hide()
         self.add_button = QPushButton("添加")
         self.add_button.setObjectName("settingsTestButton")
         self.add_button.clicked.connect(self._add_current)
@@ -895,7 +559,6 @@ class TaskManagerWidget(QWidget):
         root.addLayout(body, 1)
         self._update_operation_bar()
 
-
     @staticmethod
     def _card_title(text: str) -> QLabel:
         title = QLabel(text)
@@ -904,11 +567,10 @@ class TaskManagerWidget(QWidget):
 
     @staticmethod
     def _disable_context_menu(widget: QWidget) -> None:
-        """Disable context menu for a widget."""
         widget.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
     def _mark_dirty(self, *_args: Any) -> None:
-        """Mark the current editor as changed without reacting to reloads."""
+        """将当前编辑器标记为已修改；重载/载入数据期间（``_suspend_dirty``）不生效。"""
 
         if self._suspend_dirty:
             return
@@ -934,51 +596,45 @@ class TaskManagerWidget(QWidget):
         if self.left_tabs.currentIndex() == 0:
             return (
                 "action"
-                if self._creating_task or self.actions_list.currentRow() >= 0
+                if self._task_state.creating or self.actions_list.currentRow() >= 0
                 else "task"
             )
         return (
             "step"
-            if self._creating_compound or self.compound_steps_list.currentRow() >= 0
+            if self._compound_state.creating
+            or self.compound_steps_list.currentRow() >= 0
             else "compound"
         )
 
     def _embedded_editor_has_changes(self) -> bool:
         current = self.editor_stack.currentWidget()
         if current is self.embedded_action_editor_panel:
-            if self._embedded_editor_original is None:
+            if self._embedded.original is None:
                 return False
-            return self.embedded_action_editor.snapshot_data() != self._embedded_editor_original
-        if current is self.embedded_branch_steps_editor_panel and self._branch_steps_stack:
-            context = self._branch_steps_stack[-1]
+            return (
+                self.embedded_action_editor.snapshot_data() != self._embedded.original
+            )
+        if (
+            current is self.embedded_branch_steps_editor_panel
+            and self._embedded.branch_stack
+        ):
+            context = self._embedded.branch_stack[-1]
             return self.embedded_branch_steps_editor.get_steps() != context.get(
                 "original_steps", []
             )
         return False
 
     def _update_operation_bar(self) -> None:
-        """Update the single bottom toolbar for the active object."""
+        """按当前活动对象刷新底部唯一的操作栏。"""
 
-        if not hasattr(self, "operation_context_label"):
-            return
         context = self._current_operation_context()
-        labels = {
-            "task": "任务操作",
-            "action": "动作操作",
-            "compound": "复合任务操作",
-            "step": "步骤操作",
-            "embedded_action": "编辑动作",
-            "embedded_branch": "编辑步骤",
-            "viewer": "查看内容",
-        }
-        self.operation_context_label.setText(labels.get(context, "任务操作"))
         base_context = context in {"task", "compound"}
         action_context = context in {"action", "step", "embedded_branch"}
         editing_context = context in {"embedded_action", "embedded_branch"}
         has_selection = (
-            self._selected_task is not None
+            self._task_state.selected is not None
             if context == "task"
-            else self._selected_compound is not None
+            else self._compound_state.selected is not None
             if context == "compound"
             else self.actions_list.currentRow() >= 0
             if context == "action"
@@ -998,7 +654,10 @@ class TaskManagerWidget(QWidget):
         self.add_button.setEnabled(base_context or action_context)
         self.save_button.setVisible(True)
         self.save_button.setEnabled(
-            base_context or editing_context or self._dirty or self._embedded_editor_has_changes()
+            base_context
+            or editing_context
+            or self._dirty
+            or self._embedded_editor_has_changes()
         )
         dirty = self._dirty or self._embedded_editor_has_changes()
         self.dirty_label.setVisible(dirty)
@@ -1054,9 +713,15 @@ class TaskManagerWidget(QWidget):
 
     def _save_current(self, tab_index: int | None = None) -> bool:
         current = self.editor_stack.currentWidget()
-        if current in (self.embedded_action_editor_panel, self.embedded_branch_steps_editor_panel):
-            if not self._commit_embedded_editors():
-                return False
+        if (
+            current
+            in (
+                self.embedded_action_editor_panel,
+                self.embedded_branch_steps_editor_panel,
+            )
+            and not self._commit_embedded_editors()
+        ):
+            return False
         target_tab = self.left_tabs.currentIndex() if tab_index is None else tab_index
         if target_tab == 0:
             return self._save_task()
@@ -1070,7 +735,7 @@ class TaskManagerWidget(QWidget):
             self._leave_embedded_editor()
 
     def _leave_all_embedded_editors(self) -> bool:
-        """Return to the base editor before a list click changes context."""
+        """在列表点击切换上下文前，先逐层退回基础编辑器；用户取消则返回 False。"""
 
         while self.editor_stack.currentWidget() in (
             self.embedded_action_editor_panel,
@@ -1081,15 +746,17 @@ class TaskManagerWidget(QWidget):
         return True
 
     def _ask_unsaved_changes(self, _operation: str) -> str:
-        """Ask whether to discard the edits before continuing."""
+        """询问是否在继续之前放弃当前修改。"""
 
         message_box = QMessageBox(self)
         message_box.setWindowTitle("未保存的修改")
         message_box.setText("当前内容尚未保存，确定放弃更改吗？")
-        # Qt orders message-box buttons by role on Windows.  Use the roles
-        # below so the visible order is explicitly: 取消 (left), 确认 (right).
+        # Qt 在 Windows 上按角色排列消息框按钮。使用下面的角色，
+        # 使可见顺序明确为：取消（左）、确认（右）。
         cancel_button = message_box.addButton("取消", QMessageBox.ButtonRole.AcceptRole)
-        confirm_button = message_box.addButton("确认", QMessageBox.ButtonRole.DestructiveRole)
+        confirm_button = message_box.addButton(
+            "确认", QMessageBox.ButtonRole.DestructiveRole
+        )
         cancel_button.setObjectName("messageBoxAction")
         confirm_button.setObjectName("messageBoxAction")
         confirm_button.setDefault(True)
@@ -1104,7 +771,7 @@ class TaskManagerWidget(QWidget):
     def _resolve_unsaved_changes(
         self, operation: str, tab_index: int | None = None
     ) -> bool:
-        """Resolve the outer editor's dirty state before changing context."""
+        """在切换上下文前处理外层编辑器的未保存修改；用户取消则返回 False。"""
 
         if not self._dirty and not self._embedded_editor_has_changes():
             return True
@@ -1120,19 +787,19 @@ class TaskManagerWidget(QWidget):
         target_tab = self.left_tabs.currentIndex() if tab_index is None else tab_index
         self._dirty = False
         if target_tab == 0:
-            task_id = self._selected_task
-            if task_id in self._unsaved_task_ids:
+            task_id = self._task_state.selected
+            if task_id in self._task_state.unsaved:
                 self._tasks.pop(str(task_id), None)
-                self._unsaved_task_ids.discard(str(task_id))
+                self._task_state.unsaved.discard(str(task_id))
                 self._refresh_task_list()
             elif task_id and task_id in self._tasks:
                 self._load_task_editor(self._tasks[task_id])
             else:
                 self._clear_editor()
         else:
-            name = self._selected_compound
-            if name in self._unsaved_compound_names:
-                self._unsaved_compound_names.discard(str(name))
+            name = self._compound_state.selected
+            if name in self._compound_state.unsaved:
+                self._compound_state.unsaved.discard(str(name))
                 self._clear_compound_editor()
                 self._refresh_compound_list()
             elif name and name in self._compound_library:
@@ -1141,34 +808,25 @@ class TaskManagerWidget(QWidget):
                 self._clear_compound_editor()
         self._update_operation_bar()
 
-
-    # ------------------------------------------------------------ data
+    # 数据
 
     def reload(self) -> None:
-        """Re-read settings, task files and the compound library."""
+        """重新读取设置、任务文件与复合动作库。
+
+        打开管理页不得改动磁盘上的任何内容：设置由设置页/清理方式下拉框
+        写入，``tasks_changed`` 信号也只由真正修改任务文件的操作发出。
+        """
         self.settings = load_settings(self.settings_path)
         tasks_directory = self.base_directory / "config" / "tasks"
-        valid_ids: set[str] = set()
+        loaded: dict[str, dict[str, Any]] = {}
         try:
-            validated_tasks, _errors = load_task_directory(
+            # 原始 JSON 与校验结果一次读出，编辑器不再二次加载任务文件。
+            _tasks, _errors, loaded = load_task_directory_raw(
                 tasks_directory,
                 variables={"qq_group_name": self.settings.get("qq_group_name", "")},
             )
-            valid_ids = {task.id for task in validated_tasks}
         except (FileNotFoundError, OSError, ValueError):
-            valid_ids = set()
-        loaded: dict[str, dict[str, Any]] = {}
-        for task_path in sorted(tasks_directory.glob("*.json")):
-            try:
-                data = load_json(task_path)
-            except (OSError, ValueError):
-                continue
-            if (
-                isinstance(data, dict)
-                and isinstance(data.get("id"), str)
-                and data["id"] in valid_ids
-            ):
-                loaded[data["id"]] = data
+            pass
         ordered_ids: list[str] = []
         saved_order = self.settings.get("task_order")
         if isinstance(saved_order, list):
@@ -1180,23 +838,12 @@ class TaskManagerWidget(QWidget):
                 ordered_ids.append(task_id)
         self._tasks = {task_id: loaded[task_id] for task_id in ordered_ids}
         actions_directory = self.base_directory / "config" / "actions"
-        library: dict[str, dict[str, Any]] = {}
-        for action_path in sorted(actions_directory.glob("*.json")):
-            try:
-                data = load_json(action_path)
-            except (OSError, ValueError):
-                continue
-            if (
-                isinstance(data, dict)
-                and isinstance(data.get("name"), str)
-                and data["name"].strip()
-            ):
-                library[data["name"].strip()] = data
-        self._compound_library = library
-        self._unsaved_task_ids.clear()
-        self._unsaved_compound_names.clear()
-        self._creating_task = False
-        self._creating_compound = False
+        # 复用与任务加载相同的库解析（单份实现、一致的损坏报告）。
+        self._compound_library = load_action_library(actions_directory)
+        self._task_state.unsaved.clear()
+        self._compound_state.unsaved.clear()
+        self._task_state.creating = False
+        self._compound_state.creating = False
         self._suspend_dirty = True
         self._dirty = False
 
@@ -1209,87 +856,116 @@ class TaskManagerWidget(QWidget):
 
         self._refresh_task_list()
         self._refresh_compound_list()
-        self._embedded_editor_original = None
-        self._branch_steps_stack.clear()
+        self._embedded.close_editor()
+        self._embedded.branch_stack.clear()
         self._suspend_dirty = False
         self._update_operation_bar()
 
-
-        try:
-            save_settings(self.settings_path, self.settings)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "保存失败", str(exc))
-            return
-        self.tasks_changed.emit()
-
     def _refresh_task_list(self, select_id: str | None = None) -> None:
-        self.task_list.blockSignals(True)
-        self.task_list.clear()
-        for task_id, data in self._tasks.items():
-            name = str(data.get("name", ""))
-            item = QListWidgetItem(f"{name}（{task_id}）")
-            item.setData(Qt.ItemDataRole.UserRole, task_id)
-            self.task_list.addItem(item)
-        self.task_list.blockSignals(False)
-        if select_id is not None:
-            for index in range(self.task_list.count()):
-                if self.task_list.item(index).data(Qt.ItemDataRole.UserRole) == select_id:
-                    self.task_list.setCurrentRow(index)
-                    return
-        if self.task_list.count():
-            self.task_list.setCurrentRow(0)
-        else:
-            self._clear_editor()
-        self._update_operation_bar()
+        self._refresh_entry_list(self._task_panel, select_id)
 
     def _on_task_selected(self, row: int) -> None:
-        item = self.task_list.item(row)
-        task_id = item.data(Qt.ItemDataRole.UserRole) if item else None
-        next_id = str(task_id) if task_id else None
-        if next_id == self._selected_task:
-            self._update_operation_bar()
-            return
-        previous_id = self._selected_task
-        if not self._resolve_unsaved_changes("切换任务"):
-            self._restore_task_selection(previous_id)
-            return
-        self._selected_task = next_id
-        data = self._tasks.get(self._selected_task or "")
-        if data is None:
-            self._clear_editor()
-            return
-        self._load_task_editor(data)
-        self.editor_stack.setCurrentWidget(self.editor_stack.widget(0))
+        self._on_entry_selected(self._task_panel, row)
 
     def _on_task_item_clicked(self, item: QListWidgetItem) -> None:
-        """Focus the task itself when its already-selected row is clicked."""
+        self._on_entry_item_clicked(self._task_panel, item)
 
-        task_id = item.data(Qt.ItemDataRole.UserRole)
-        if str(task_id or "") != str(self._selected_task or ""):
+    def _restore_task_selection(self, task_id: str | None) -> None:
+        self._restore_entry_selection(self._task_panel, task_id)
+
+    def _refresh_entry_list(
+        self,
+        panel: _EntryListPanel,
+        select_key: str | None = None,
+    ) -> None:
+        """重建名称列表；``select_key`` 命中则选中该行，否则选第一行。"""
+
+        list_widget = panel.list_widget
+        list_widget.blockSignals(True)
+        list_widget.clear()
+        for key, data in panel.entries().items():
+            item = QListWidgetItem(panel.label_for(key, data))
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            list_widget.addItem(item)
+        list_widget.blockSignals(False)
+        if select_key is not None and self._select_list_row(list_widget, select_key):
+            return
+        if list_widget.count():
+            list_widget.setCurrentRow(0)
+        else:
+            panel.on_empty()
+        self._update_operation_bar()
+
+    @staticmethod
+    def _select_list_row(list_widget: QListWidget, key: str) -> bool:
+        """选中 UserRole 数据等于 ``key`` 的行；返回是否命中。"""
+
+        for index in range(list_widget.count()):
+            if list_widget.item(index).data(Qt.ItemDataRole.UserRole) == key:
+                list_widget.setCurrentRow(index)
+                return True
+        return False
+
+    def _on_entry_selected(self, panel: _EntryListPanel, row: int) -> None:
+        item = panel.list_widget.item(row)
+        raw = item.data(Qt.ItemDataRole.UserRole) if item else None
+        next_key = str(raw) if raw else None
+        if next_key == panel.state.selected:
+            self._update_operation_bar()
+            return
+        previous = panel.state.selected
+        if not self._resolve_unsaved_changes(panel.switch_label):
+            self._restore_entry_selection(panel, previous)
+            return
+        panel.state.selected = next_key
+        data = panel.entries().get(next_key or "")
+        if data is None:
+            panel.clear_editor()
+            return
+        panel.load_editor(data)
+        self.editor_stack.setCurrentWidget(self.editor_stack.widget(panel.stack_index))
+
+    def _on_entry_item_clicked(
+        self, panel: _EntryListPanel, item: QListWidgetItem
+    ) -> None:
+        """点击已选中的行时聚焦该对象本身。"""
+
+        if str(item.data(Qt.ItemDataRole.UserRole) or "") != str(
+            panel.state.selected or ""
+        ):
             return
         if not self._leave_all_embedded_editors():
             return
-        self.actions_list.setCurrentRow(-1)
-        self._embedded_previous_panel = None
-        self.editor_stack.setCurrentWidget(self.editor_stack.widget(0))
+        panel.steps_list.setCurrentRow(-1)
+        self._embedded.previous_panel = None
+        self.editor_stack.setCurrentWidget(self.editor_stack.widget(panel.stack_index))
         self._update_operation_bar()
 
-    def _restore_task_selection(self, task_id: str | None) -> None:
-        self.task_list.blockSignals(True)
+    def _restore_entry_selection(self, panel: _EntryListPanel, key: str | None) -> None:
+        self._restore_list_selection(panel.list_widget, key, self._update_operation_bar)
+
+    @staticmethod
+    def _restore_list_selection(
+        list_widget: QListWidget,
+        key: str | None,
+        update_bar: Callable[[], None],
+    ) -> None:
+        """选中 UserRole 数据等于 ``key`` 的行；``key`` 为 None 时清除选中。"""
+        list_widget.blockSignals(True)
         try:
-            if task_id is None:
-                self.task_list.setCurrentRow(-1)
+            if key is None:
+                list_widget.setCurrentRow(-1)
             else:
-                for index in range(self.task_list.count()):
-                    if self.task_list.item(index).data(Qt.ItemDataRole.UserRole) == task_id:
-                        self.task_list.setCurrentRow(index)
+                for index in range(list_widget.count()):
+                    if list_widget.item(index).data(Qt.ItemDataRole.UserRole) == key:
+                        list_widget.setCurrentRow(index)
                         break
         finally:
-            self.task_list.blockSignals(False)
-        self._update_operation_bar()
+            list_widget.blockSignals(False)
+        update_bar()
 
     def _load_task_editor(self, data: dict[str, Any]) -> None:
-        self._creating_task = False
+        self._task_state.creating = False
         self._suspend_dirty = True
         try:
             self.task_id_edit.setText(str(data.get("id", "")))
@@ -1306,9 +982,9 @@ class TaskManagerWidget(QWidget):
         self._update_operation_bar()
 
     def _clear_editor(self) -> None:
-        self._creating_task = False
+        self._task_state.creating = False
         self._suspend_dirty = True
-        self._selected_task = None
+        self._task_state.selected = None
         self._actions_buffer = []
         self.task_id_edit.clear()
         self.task_name_edit.clear()
@@ -1318,30 +994,31 @@ class TaskManagerWidget(QWidget):
         self._dirty = False
         self._update_operation_bar()
 
-    # ------------------------------------------------------------ tasks
+    # 任务
 
     def _new_task(self) -> None:
-        if not self._resolve_unsaved_changes("新建任务"):
+        self._begin_create_entry(self._task_panel)
+
+    def _begin_create_entry(self, panel: _EntryListPanel) -> None:
+        if not self._resolve_unsaved_changes(panel.new_label):
             return
-        self.task_list.setCurrentRow(-1)
-        self._clear_editor()
-        self._creating_task = True
+        panel.list_widget.setCurrentRow(-1)
+        panel.clear_editor()
+        panel.state.creating = True
         self._set_dirty(False)
 
     def _duplicate_task(self) -> None:
         if not self._resolve_unsaved_changes("复制任务"):
             return
-        source_id = self._selected_task
+        source_id = self._task_state.selected
         if not source_id or source_id not in self._tasks:
             QMessageBox.information(self, "复制任务", "请先选择一个任务。")
             return
         data = deep_copy(self._tasks[source_id])
-        candidate = f"{source_id}_copy"
-        while candidate in self._tasks:
-            candidate = f"{candidate}_copy"
+        candidate = self._unique_copy_name(source_id, self._tasks)
         data["id"] = candidate
         self._tasks[candidate] = data
-        self._unsaved_task_ids.add(candidate)
+        self._task_state.unsaved.add(candidate)
         self._refresh_task_list(select_id=candidate)
         self._set_dirty(True)
 
@@ -1362,7 +1039,7 @@ class TaskManagerWidget(QWidget):
     def _delete_task(self) -> None:
         if not self._resolve_unsaved_changes("删除任务"):
             return
-        task_id = self._selected_task
+        task_id = self._task_state.selected
         if not task_id or task_id not in self._tasks:
             QMessageBox.information(self, "删除任务", "请先选择一个任务。")
             return
@@ -1371,26 +1048,31 @@ class TaskManagerWidget(QWidget):
         ):
             return
         self._tasks.pop(task_id, None)
-        self._unsaved_task_ids.discard(task_id)
+        self._task_state.unsaved.discard(task_id)
         task_order = self.settings.get("task_order")
         if not isinstance(task_order, list):
             task_order = []
-        self.settings["task_order"] = [item for item in task_order if item != task_id]
         try:
-            save_settings(self.settings_path, self.settings)
+            self.settings = update_settings(
+                self.settings_path,
+                {"task_order": [item for item in task_order if item != task_id]},
+            )
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "顺序保存失败", f"任务已删除，但任务顺序未持久化：{exc}")
+            QMessageBox.warning(
+                self, "顺序保存失败", f"任务已删除，但任务顺序未持久化：{exc}"
+            )
         self._dirty = False
         self._refresh_task_list()
         self.tasks_changed.emit()
         self._update_operation_bar()
 
-    def _delete_file(self, path: Path | None, title: str, kind_label: str, name: str) -> bool:
-        """Confirm and delete ``path`` under the current cleanup mode.
+    def _delete_file(
+        self, path: Path | None, title: str, kind_label: str, name: str
+    ) -> bool:
+        """按当前清理方式确认并删除 ``path``。
 
-        When ``path`` is None or does not exist, deletion is a no-op but still
-        counts as success. Returns False when the user cancels or the deletion
-        fails, so callers may abort the rest of the removal flow.
+        ``path`` 为 None 或不存在时删除是空操作，但仍视为成功；用户取消或
+        删除失败时返回 False，调用方可据此中止后续删除流程。
         """
         mode = str(self.cleanup_mode_combo.currentData() or "recycle")
         mode_label = "永久删除" if mode == "permanent" else "删除至回收站"
@@ -1398,10 +1080,7 @@ class TaskManagerWidget(QWidget):
             return False
         if path is not None and path.exists():
             try:
-                if mode == "permanent":
-                    path.unlink()
-                else:
-                    send_to_recycle_bin(path)
+                remove_path(path, mode)
             except (OSError, TrashError) as exc:
                 QMessageBox.warning(self, "删除失败", str(exc))
                 return False
@@ -1411,100 +1090,53 @@ class TaskManagerWidget(QWidget):
         mode = str(self.cleanup_mode_combo.currentData() or "recycle")
         self.settings["cleanup_mode"] = mode
         try:
-            save_settings(self.settings_path, self.settings)
+            self.settings = update_settings(self.settings_path, {"cleanup_mode": mode})
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "保存失败", str(exc))
 
-    # ------------------------------------------------------------ compound library
+    # 复合动作库
 
     def _refresh_compound_list(self, select_name: str | None = None) -> None:
-        self.compound_list.blockSignals(True)
-        self.compound_list.clear()
-        for name, data in self._compound_library.items():
-            item = QListWidgetItem(name)
-            item.setData(Qt.ItemDataRole.UserRole, name)
-            self.compound_list.addItem(item)
-        self.compound_list.blockSignals(False)
-        if select_name is not None:
-            for index in range(self.compound_list.count()):
-                if self.compound_list.item(index).data(Qt.ItemDataRole.UserRole) == select_name:
-                    self.compound_list.setCurrentRow(index)
-                    return
-        if self.compound_list.count():
-            self.compound_list.setCurrentRow(0)
-        else:
-            self._selected_compound = None
+        self._refresh_entry_list(self._compound_panel, select_name)
 
     def _on_compound_selected(self, row: int) -> None:
-        item = self.compound_list.item(row)
-        name = item.data(Qt.ItemDataRole.UserRole) if item else None
-        next_name = str(name) if name else None
-        if next_name == self._selected_compound:
-            self._update_operation_bar()
-            return
-        previous_name = self._selected_compound
-        if not self._resolve_unsaved_changes("切换复合任务"):
-            self._restore_compound_selection(previous_name)
-            return
-        self._selected_compound = next_name
-        data = self._compound_library.get(self._selected_compound or "")
-        if data is None:
-            self._clear_compound_editor()
-            return
-        self._load_compound_editor(data)
-        self.editor_stack.setCurrentWidget(self.editor_stack.widget(1))
+        self._on_entry_selected(self._compound_panel, row)
 
     def _on_compound_item_clicked(self, item: QListWidgetItem) -> None:
-        """Focus the compound task when its already-selected row is clicked."""
-
-        name = item.data(Qt.ItemDataRole.UserRole)
-        if str(name or "") != str(self._selected_compound or ""):
-            return
-        if not self._leave_all_embedded_editors():
-            return
-        self.compound_steps_list.setCurrentRow(-1)
-        self._embedded_previous_panel = None
-        self.editor_stack.setCurrentWidget(self.editor_stack.widget(1))
-        self._update_operation_bar()
+        self._on_entry_item_clicked(self._compound_panel, item)
 
     def _restore_compound_selection(self, name: str | None) -> None:
-        self.compound_list.blockSignals(True)
-        try:
-            if name is None:
-                self.compound_list.setCurrentRow(-1)
-            else:
-                for index in range(self.compound_list.count()):
-                    if self.compound_list.item(index).data(Qt.ItemDataRole.UserRole) == name:
-                        self.compound_list.setCurrentRow(index)
-                        break
-        finally:
-            self.compound_list.blockSignals(False)
-        self._update_operation_bar()
+        self._restore_entry_selection(self._compound_panel, name)
+
+    def _clear_compound_selection(self) -> None:
+        self._compound_state.selected = None
 
     def _new_compound(self) -> None:
-        if not self._resolve_unsaved_changes("新建复合任务"):
-            return
-        self.compound_list.setCurrentRow(-1)
-        self._clear_compound_editor()
-        self._creating_compound = True
-        self._set_dirty(False)
+        self._begin_create_entry(self._compound_panel)
+
+    @staticmethod
+    def _unique_copy_name(source: str, existing: dict[str, Any]) -> str:
+        """为复制出的对象生成不冲突的 ``xxx_copy`` 名称。"""
+
+        candidate = f"{source}_copy"
+        while candidate in existing:
+            candidate = f"{candidate}_copy"
+        return candidate
 
     def _duplicate_compound(self) -> None:
         if not self._resolve_unsaved_changes("复制复合任务"):
             return
-        source_name = self._selected_compound
+        source_name = self._compound_state.selected
         if not source_name or source_name not in self._compound_library:
             QMessageBox.information(self, "复制复合任务", "请先选择一个复合任务。")
             return
         data = deep_copy(self._compound_library[source_name])
-        candidate = f"{source_name}_copy"
-        while candidate in self._compound_library:
-            candidate = f"{candidate}_copy"
+        candidate = self._unique_copy_name(source_name, self._compound_library)
         data["name"] = candidate
         self.compound_list.setCurrentRow(-1)
-        self._selected_compound = None
+        self._compound_state.selected = None
         self._load_compound_editor(data)
-        self._unsaved_compound_names.add(candidate)
+        self._compound_state.unsaved.add(candidate)
         self._set_dirty(True)
 
     def _edit_compound(self) -> None:
@@ -1533,7 +1165,7 @@ class TaskManagerWidget(QWidget):
         ):
             return
         self._compound_library.pop(name, None)
-        self._unsaved_compound_names.discard(name)
+        self._compound_state.unsaved.discard(name)
         self._dirty = False
         self._refresh_compound_list()
         self.tasks_changed.emit()
@@ -1577,13 +1209,37 @@ class TaskManagerWidget(QWidget):
             )
         return updates
 
-    @staticmethod
-    def _write_json_file(path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+    def _rollback_rename(
+        self,
+        old_path: Path,
+        new_path: Path,
+        mode: str,
+        restore: Callable[[], None],
+    ) -> bool:
+        """删除重命名前的旧文件 ``old_path``；失败时回滚删除 ``new_path`` 并执行 ``restore``。
+
+        删除失败且调用方必须中止重命名流程时返回 True（警告框已弹出）。
+        """
+
+        try:
+            remove_path(old_path, mode)
+            return False
+        except (OSError, TrashError) as exc:
+            rollback_error: Exception | None = None
+            try:
+                remove_path(new_path, mode)
+            except (OSError, TrashError) as rollback_exc:
+                rollback_error = rollback_exc
+            restore()
+            if rollback_error is None:
+                message = f"重命名失败，已回滚：{exc}"
+            else:
+                message = (
+                    f"重命名失败，回滚删除新文件也失败：{exc}；{rollback_error}，"
+                    "新旧两个文件可能都存在。"
+                )
+            QMessageBox.warning(self, "保存失败", message)
+            return True
 
     def _save_compound(
         self, data: dict[str, Any], previous_name: str | None = None
@@ -1591,14 +1247,22 @@ class TaskManagerWidget(QWidget):
         name = str(data.get("name", "")).strip()
         steps = data.get("steps")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
-            QMessageBox.warning(self, "无法保存", "复合任务名只能包含字母、数字、下划线和短横线，且以字母或数字开头。")
+            QMessageBox.warning(
+                self,
+                "无法保存",
+                "复合任务名只能包含字母、数字、下划线和短横线，且以字母或数字开头。",
+            )
             return False
         if not isinstance(steps, list) or not steps:
             QMessageBox.warning(self, "无法保存", "复合任务 steps 必须是非空列表。")
             return False
         action_path = self.base_directory / "config" / "actions" / f"{name}.json"
-        if previous_name != name and (name in self._compound_library or action_path.exists()):
-            QMessageBox.warning(self, "无法保存", f"复合任务名已存在：{name}，请改名后重试。")
+        if previous_name != name and (
+            name in self._compound_library or action_path.exists()
+        ):
+            QMessageBox.warning(
+                self, "无法保存", f"复合任务名已存在：{name}，请改名后重试。"
+            )
             return False
         if previous_name and previous_name in self._compound_library:
             old_data = deep_copy(self._compound_library[previous_name])
@@ -1617,58 +1281,43 @@ class TaskManagerWidget(QWidget):
         written_references: list[tuple[Path, dict[str, Any]]] = []
         try:
             for task_id, original, updated, task_path in reference_updates:
-                if task_path is None or task_id in self._unsaved_task_ids:
+                if task_path is None or task_id in self._task_state.unsaved:
                     continue
-                self._write_json_file(task_path, updated)
+                write_json_file(task_path, updated)
                 written_references.append((task_path, original))
-            self._write_json_file(action_path, data)
+            write_json_file(action_path, data)
         except OSError as exc:
             for task_path, original in written_references:
                 try:
-                    self._write_json_file(task_path, original)
+                    write_json_file(task_path, original)
                 except OSError:
                     pass
             QMessageBox.warning(self, "无法保存", str(exc))
             return False
         if old_path is not None and old_path.exists():
             mode = str(self.cleanup_mode_combo.currentData() or "recycle")
-            try:
-                if mode == "permanent":
-                    old_path.unlink()
-                else:
-                    send_to_recycle_bin(old_path)
-            except (OSError, TrashError) as exc:
-                rollback_error: Exception | None = None
-                try:
-                    if mode == "permanent":
-                        action_path.unlink()
-                    else:
-                        send_to_recycle_bin(action_path)
-                except (OSError, TrashError) as rollback_exc:
-                    rollback_error = rollback_exc
+
+            def _restore_compound() -> None:
                 if old_data is not None and previous_name is not None:
                     self._compound_library[previous_name] = old_data
                 for task_path, original in written_references:
                     try:
-                        self._write_json_file(task_path, original)
+                        write_json_file(task_path, original)
                     except OSError:
                         pass
                 self._refresh_compound_list()
-                if rollback_error is None:
-                    message = f"重命名失败，已回滚：{exc}"
-                else:
-                    message = f"重命名失败，回滚删除新文件也失败：{exc}；{rollback_error}，新旧两个文件可能都存在。"
-                QMessageBox.warning(self, "保存失败", message)
+
+            if self._rollback_rename(old_path, action_path, mode, _restore_compound):
                 return False
         if previous_name and previous_name != name:
             self._compound_library.pop(previous_name, None)
-            self._unsaved_compound_names.discard(previous_name)
+            self._compound_state.unsaved.discard(previous_name)
         for task_id, _original, updated, _task_path in reference_updates:
             self._tasks[task_id] = updated
-        self._unsaved_compound_names.discard(name)
+        self._compound_state.unsaved.discard(name)
         self._compound_library[name] = data
-        self._selected_compound = name
-        self._creating_compound = False
+        self._compound_state.selected = name
+        self._compound_state.creating = False
         self._dirty = False
         self._refresh_compound_list(select_name=name)
         self.tasks_changed.emit()
@@ -1678,49 +1327,38 @@ class TaskManagerWidget(QWidget):
     def _save_compound_from_editor(self) -> bool:
         data = {
             "name": self.compound_name_edit.text().strip(),
-            "params": list(self._params_buffer),
             "steps": deep_copy(self._steps_buffer),
         }
         if self._compound_description_present or self._compound_description_buffer:
             data["description"] = self._compound_description_buffer
-        return self._save_compound(data, previous_name=self._selected_compound)
+        return self._save_compound(data, previous_name=self._compound_state.selected)
 
     def _view_compound_json(self) -> None:
         data = {
             "name": self.compound_name_edit.text().strip(),
-            "params": list(self._params_buffer),
             "steps": deep_copy(self._steps_buffer),
         }
         self.embedded_json_viewer.load_data(data)
-        self._embedded_previous_panel = self.editor_stack.currentWidget()
+        self._embedded.previous_panel = self.editor_stack.currentWidget()
         self.editor_stack.setCurrentWidget(self.embedded_json_viewer_panel)
 
     def _load_compound_editor(self, data: dict[str, Any]) -> None:
-        self._creating_compound = False
+        self._compound_state.creating = False
         self._suspend_dirty = True
         self.compound_name_edit.setText(str(data.get("name", "")))
         self._compound_description_buffer = str(data.get("description", ""))
         self._compound_description_present = "description" in data
-        raw_params = data.get("params")
-        self._params_buffer = (
-            [str(item).strip() for item in raw_params if isinstance(item, str) and item.strip()]
-            if isinstance(raw_params, list)
-            else []
-        )
         raw_steps = data.get("steps")
-        self._steps_buffer = (
-            deep_copy(raw_steps) if isinstance(raw_steps, list) else []
-        )
+        self._steps_buffer = deep_copy(raw_steps) if isinstance(raw_steps, list) else []
         self._refresh_steps_list()
         self._suspend_dirty = False
         self._dirty = False
         self._update_operation_bar()
 
     def _clear_compound_editor(self) -> None:
-        self._creating_compound = False
+        self._compound_state.creating = False
         self._suspend_dirty = True
-        self._selected_compound = None
-        self._params_buffer = []
+        self._compound_state.selected = None
         self._steps_buffer = []
         self._compound_description_buffer = ""
         self._compound_description_present = False
@@ -1734,11 +1372,10 @@ class TaskManagerWidget(QWidget):
         self._refresh_list(self.compound_steps_list, self._steps_buffer)
 
     def _sync_steps_from_list(self) -> None:
-        """Reorder _steps_buffer to match the visual order after drag-drop."""
+        """拖拽排序后按界面顺序重排 ``_steps_buffer``。"""
         self._sync_list_order(self.compound_steps_list, self._steps_buffer)
 
     def _on_compound_steps_moved(self) -> None:
-        """Sync buffer after internal drag-drop reorder."""
         self._sync_steps_from_list()
         self._mark_dirty()
 
@@ -1764,7 +1401,6 @@ class TaskManagerWidget(QWidget):
         )
 
     def _run_single_step(self) -> None:
-        """Run only the selected step."""
         self._run_single_entry(
             self._steps_buffer,
             self.compound_steps_list.currentRow(),
@@ -1780,11 +1416,11 @@ class TaskManagerWidget(QWidget):
         initial: dict[str, Any] | None = None,
         return_panel: QWidget | None = None,
     ) -> None:
-        """Show the embedded action editor in the right panel."""
-        self._embedded_editor_mode = mode
-        self._embedded_editor_index = index
-        self._embedded_editor_return_panel = return_panel
-        self._embedded_editor_original = deep_copy(initial or {})
+        """在右侧面板打开内嵌动作编辑器。"""
+        self._embedded.mode = mode
+        self._embedded.index = index
+        self._embedded.return_panel = return_panel
+        self._embedded.original = deep_copy(initial or {})
         allow_compound = mode == "task_action"
         self.embedded_action_editor._allow_compound = allow_compound
         self.embedded_action_editor._compound_library = dict(self._compound_library)
@@ -1805,28 +1441,38 @@ class TaskManagerWidget(QWidget):
     ) -> None:
         action_data = self.embedded_action_editor.snapshot_data()
         action_data[key] = deep_copy(steps) if isinstance(steps, list) else []
-        self._branch_steps_stack.append(
+        self._embedded.branch_stack.append(
             {
                 "key": key,
                 "action_data": action_data,
-                "steps": (
-                    deep_copy(steps) if isinstance(steps, list) else []
-                ),
-                "original_steps": (
-                    deep_copy(steps) if isinstance(steps, list) else []
-                ),
+                "steps": (deep_copy(steps) if isinstance(steps, list) else []),
+                "original_steps": (deep_copy(steps) if isinstance(steps, list) else []),
+                # 打开分支前的编辑上下文。返回时必须恢复，否则多层嵌套
+                # 下提交目标会错位（内层修改写不回任务动作）。
+                "parent_mode": self._embedded.mode,
+                "parent_index": self._embedded.index,
+                "parent_original": self._embedded.original,
             }
         )
         self.embedded_branch_steps_editor.load_steps(
-            self._branch_steps_stack[-1]["steps"]
+            self._embedded.branch_stack[-1]["steps"]
         )
         self.editor_stack.setCurrentWidget(self.embedded_branch_steps_editor_panel)
         self._update_operation_bar()
 
+    def _restore_branch_parent(self, context: dict[str, Any]) -> None:
+        """恢复拥有该分支的动作编辑器上下文。"""
+
+        self._embedded.mode = context.get("parent_mode")
+        # context 由 _open_branch_editor 构建，parent_index 键必然存在。
+        self._embedded.index = context["parent_index"]
+        self._embedded.original = context.get("parent_original")
+
     def _on_branch_steps_saved(self, steps: list[dict[str, Any]]) -> None:
-        if self._branch_steps_stack:
-            context = self._branch_steps_stack.pop()
+        if self._embedded.branch_stack:
+            context = self._embedded.branch_stack.pop()
             context["action_data"][context["key"]] = deep_copy(steps)
+            self._restore_branch_parent(context)
             self._suspend_dirty = True
             try:
                 self.embedded_action_editor.load_data(context["action_data"])
@@ -1837,8 +1483,9 @@ class TaskManagerWidget(QWidget):
         self._update_operation_bar()
 
     def _on_branch_steps_cancelled(self) -> None:
-        if self._branch_steps_stack:
-            context = self._branch_steps_stack.pop()
+        if self._embedded.branch_stack:
+            context = self._embedded.branch_stack.pop()
+            self._restore_branch_parent(context)
             self._suspend_dirty = True
             try:
                 self.embedded_action_editor.load_data(context["action_data"])
@@ -1848,8 +1495,8 @@ class TaskManagerWidget(QWidget):
         self._update_operation_bar()
 
     def _add_branch_step(self) -> None:
-        if self._branch_steps_stack:
-            self._branch_steps_stack[-1]["steps"] = (
+        if self._embedded.branch_stack:
+            self._embedded.branch_stack[-1]["steps"] = (
                 self.embedded_branch_steps_editor.get_steps()
             )
         self._show_embedded_editor(
@@ -1867,8 +1514,8 @@ class TaskManagerWidget(QWidget):
             return
         steps.insert(row + 1, deep_copy(steps[row]))
         self.embedded_branch_steps_editor.load_steps(steps)
-        if self._branch_steps_stack:
-            self._branch_steps_stack[-1]["steps"] = deep_copy(steps)
+        if self._embedded.branch_stack:
+            self._embedded.branch_stack[-1]["steps"] = deep_copy(steps)
         self.embedded_branch_steps_editor.steps_list.setCurrentRow(row + 1)
         self._mark_dirty()
 
@@ -1879,8 +1526,8 @@ class TaskManagerWidget(QWidget):
             return
         del steps[row]
         self.embedded_branch_steps_editor.load_steps(steps)
-        if self._branch_steps_stack:
-            self._branch_steps_stack[-1]["steps"] = deep_copy(steps)
+        if self._embedded.branch_stack:
+            self._embedded.branch_stack[-1]["steps"] = deep_copy(steps)
         self._mark_dirty()
 
     def _run_single_branch_step(self) -> None:
@@ -1893,9 +1540,9 @@ class TaskManagerWidget(QWidget):
         )
 
     def _edit_branch_step(self, row: int) -> None:
-        if not self._branch_steps_stack:
+        if not self._embedded.branch_stack:
             return
-        context = self._branch_steps_stack[-1]
+        context = self._embedded.branch_stack[-1]
         context["steps"] = self.embedded_branch_steps_editor.get_steps()
         steps = context["steps"]
         if row < 0 or row >= len(steps):
@@ -1908,45 +1555,41 @@ class TaskManagerWidget(QWidget):
         )
 
     def _on_embedded_editor_saved(self, data: dict[str, Any]) -> None:
-        """Handle save from embedded editor."""
         return_panel: QWidget | None = None
-        if self._embedded_editor_mode == "task_action":
-            if self._embedded_editor_index >= 0:
-                self._actions_buffer[self._embedded_editor_index] = data
+        if self._embedded.mode == "task_action":
+            if self._embedded.index >= 0:
+                self._actions_buffer[self._embedded.index] = data
             else:
                 self._actions_buffer.append(data)
             self._refresh_actions_list()
-            if self._embedded_editor_index >= 0:
-                self.actions_list.setCurrentRow(self._embedded_editor_index)
+            if self._embedded.index >= 0:
+                self.actions_list.setCurrentRow(self._embedded.index)
             else:
                 self.actions_list.setCurrentRow(len(self._actions_buffer) - 1)
-        elif self._embedded_editor_mode == "compound_step":
-            if self._embedded_editor_index >= 0:
-                self._steps_buffer[self._embedded_editor_index] = data
+        elif self._embedded.mode == "compound_step":
+            if self._embedded.index >= 0:
+                self._steps_buffer[self._embedded.index] = data
             else:
                 self._steps_buffer.append(data)
             self._refresh_steps_list()
-            if self._embedded_editor_index >= 0:
-                self.compound_steps_list.setCurrentRow(self._embedded_editor_index)
+            if self._embedded.index >= 0:
+                self.compound_steps_list.setCurrentRow(self._embedded.index)
             else:
                 self.compound_steps_list.setCurrentRow(len(self._steps_buffer) - 1)
-        elif self._embedded_editor_mode == "branch_step":
-            if self._branch_steps_stack:
-                context = self._branch_steps_stack[-1]
-                if self._embedded_editor_index >= 0:
-                    context["steps"][self._embedded_editor_index] = data
+        elif self._embedded.mode == "branch_step":
+            if self._embedded.branch_stack:
+                context = self._embedded.branch_stack[-1]
+                if self._embedded.index >= 0:
+                    context["steps"][self._embedded.index] = data
                 else:
                     context["steps"].append(data)
                 self.embedded_branch_steps_editor.load_steps(context["steps"])
                 return_panel = self.embedded_branch_steps_editor_panel
             else:
-                return_panel = self._embedded_editor_return_panel
+                return_panel = self._embedded.return_panel
         else:
-            return_panel = self._embedded_editor_return_panel
-        self._embedded_editor_mode = None
-        self._embedded_editor_index = -1
-        self._embedded_editor_return_panel = None
-        self._embedded_editor_original = None
+            return_panel = self._embedded.return_panel
+        self._embedded.close_editor()
         self._mark_dirty()
         target_panel = return_panel
         if target_panel is None:
@@ -1955,12 +1598,7 @@ class TaskManagerWidget(QWidget):
         self._update_operation_bar()
 
     def _on_embedded_editor_cancelled(self) -> None:
-        """Handle cancel from embedded editor."""
-        return_panel = self._embedded_editor_return_panel
-        self._embedded_editor_mode = None
-        self._embedded_editor_index = -1
-        self._embedded_editor_return_panel = None
-        self._embedded_editor_original = None
+        return_panel = self._embedded.close_editor()
         target_panel = return_panel
         if target_panel is None:
             target_panel = self.editor_stack.widget(self.left_tabs.currentIndex())
@@ -1968,16 +1606,16 @@ class TaskManagerWidget(QWidget):
         self._update_operation_bar()
 
     def _close_embedded_viewer(self) -> None:
-        """Return from an embedded viewer to the panel shown before it."""
-        target_panel = self._embedded_previous_panel
-        self._embedded_previous_panel = None
+        """从内嵌查看器返回打开它之前的面板。"""
+        target_panel = self._embedded.previous_panel
+        self._embedded.previous_panel = None
         if target_panel is not None:
             self.editor_stack.setCurrentWidget(target_panel)
         else:
             self.editor_stack.setCurrentIndex(self.left_tabs.currentIndex())
 
     def _commit_embedded_editors(self) -> bool:
-        """Commit nested embedded editors before persisting the parent object."""
+        """在保存父对象前，逐层提交嵌套的内嵌编辑器。"""
 
         for _ in range(self._MAX_EMBEDDED_EDITOR_DEPTH):
             current = self.editor_stack.currentWidget()
@@ -1993,10 +1631,20 @@ class TaskManagerWidget(QWidget):
                 self._on_embedded_editor_saved(data)
                 continue
             break
+        # 循环上限只是防御：嵌套超过上限时不能静默丢数据，
+        # 提示用户逐层退出后再保存。
+        if self._embedded.branch_stack or self.editor_stack.currentWidget() in (
+            self.embedded_action_editor_panel,
+            self.embedded_branch_steps_editor_panel,
+        ):
+            QMessageBox.warning(
+                self, "无法保存", "编辑嵌套层级过深，请逐层返回后再保存。"
+            )
+            return False
         return True
 
     def _leave_embedded_editor(self) -> bool:
-        """Leave one embedded editing level after resolving pending changes."""
+        """处理未保存修改后退出一层内嵌编辑；用户取消则返回 False。"""
 
         current = self.editor_stack.currentWidget()
         if current is self.embedded_branch_steps_editor_panel:
@@ -2033,15 +1681,13 @@ class TaskManagerWidget(QWidget):
         return False
 
     def has_unsaved_changes(self) -> bool:
-        """True while the editor holds modifications that are not persisted."""
         return self._dirty or self._embedded_editor_has_changes()
 
     def go_back(self) -> bool:
-        """Navigate one level back while protecting unsaved editor changes.
+        """返回上一层级，同时保护未保存的编辑内容。
 
-        Returns True when the back press was consumed (dialog shown / a level
-        popped) so callers must not leave the page, and False when there is
-        nothing to protect and the page may close.
+        返回 True 表示本次返回已被消费（弹出了确认框或退出一层），调用方不应
+        离开本页；返回 False 表示无需保护或未保存修改已处理完毕，可以关闭本页。
         """
         current = self.editor_stack.currentWidget()
         if current in (
@@ -2062,29 +1708,27 @@ class TaskManagerWidget(QWidget):
         return False
 
     def show_run_viewer(self, task_name: str) -> None:
-        """Open the embedded run output panel for a debug run."""
+        """为调试运行打开内嵌运行输出面板。"""
         self.embedded_run_viewer.start_run(task_name)
-        self._embedded_previous_panel = self.editor_stack.currentWidget()
+        self._embedded.previous_panel = self.editor_stack.currentWidget()
         self.editor_stack.setCurrentWidget(self.embedded_run_viewer_panel)
 
     def append_run_log(self, message: str) -> None:
-        """Append a worker log line to the embedded run output."""
+        """把 worker 的一条日志追加到内嵌运行输出。"""
         self.embedded_run_viewer.append_log(message)
 
     def set_run_progress(self, index: int, total: int, description: str) -> None:
-        """Update progress inside the embedded run output."""
         self.embedded_run_viewer.set_progress(index, total, description)
 
     def finish_run(self, result: RunResult) -> None:
-        """Show the final result inside the embedded run output."""
+        """在内嵌运行输出中显示最终结果。"""
         self.embedded_run_viewer.finish_run(result)
 
     def abort_run(self, message: str) -> None:
-        """Mark the embedded run output as failed before execution starts."""
+        """运行前的准备失败时，把内嵌运行输出标记为未运行。"""
         self.embedded_run_viewer.abort_run(message)
 
     def _on_embedded_ui_tree_action_inserted(self, action: dict[str, Any]) -> None:
-        """Handle action insertion from embedded UI tree viewer."""
         current_tab = self.left_tabs.currentIndex()
         if current_tab == 0:
             self._actions_buffer.append(action)
@@ -2096,23 +1740,30 @@ class TaskManagerWidget(QWidget):
             self.compound_steps_list.setCurrentRow(len(self._steps_buffer) - 1)
         self.editor_stack.setCurrentIndex(current_tab)
 
-    def _on_embedded_ui_tree_try_click_requested(self, x: int, y: int, _label: str) -> None:
-        """Tap the selected node once through the ADB session used for the dump."""
+    def _on_embedded_ui_tree_try_click_requested(
+        self, x: int, y: int, _label: str
+    ) -> None:
+        """复用抓取 UI 树时的 ADB 会话，点击一次所选节点。"""
         if self._ui_tree_adb is None:
             QMessageBox.warning(self, "无法尝试点击", "ADB 未连接，请先抓取 UI 树。")
             return
-        try:
-            self._ui_tree_adb.tap(x, y)
-        except Exception as exc:
-            QMessageBox.warning(self, "尝试点击失败", str(exc))
-            return
+        adb = self._ui_tree_adb
+        self.spawn_background(
+            lambda: adb.tap(x, y),
+            None,
+            lambda message: QMessageBox.warning(self, "尝试点击失败", message),
+        )
 
     def _save_task(self) -> bool:
         task_id = self.task_id_edit.text().strip()
         name = self.task_name_edit.text().strip()
         package = self.task_package_edit.text().strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", task_id):
-            QMessageBox.warning(self, "无法保存", "任务 id 只能包含字母、数字、下划线和短横线，且以字母或数字开头。")
+            QMessageBox.warning(
+                self,
+                "无法保存",
+                "任务 id 只能包含字母、数字、下划线和短横线，且以字母或数字开头。",
+            )
             return False
         if not name:
             QMessageBox.warning(self, "无法保存", "任务名称不能为空。")
@@ -2124,14 +1775,20 @@ class TaskManagerWidget(QWidget):
         if not actions:
             QMessageBox.warning(self, "无法保存", "任务至少需要一个动作。")
             return False
-        previous_id = self._selected_task
+        previous_id = self._task_state.selected
         target = self.base_directory / "config" / "tasks" / f"{task_id}.json"
         if previous_id != task_id and (task_id in self._tasks or target.exists()):
-            QMessageBox.warning(self, "无法保存", f"任务 id 已存在（文件已存在）：{task_id}\n请改名后重试。")
+            QMessageBox.warning(
+                self,
+                "无法保存",
+                f"任务 id 已存在（文件已存在）：{task_id}\n请改名后重试。",
+            )
             return False
         validation_errors = self._validate_task_actions(actions)
         if validation_errors:
-            QMessageBox.warning(self, "无法保存", "动作校验失败：\n" + "\n".join(validation_errors))
+            QMessageBox.warning(
+                self, "无法保存", "动作校验失败：\n" + "\n".join(validation_errors)
+            )
             return False
         old_data = (
             deep_copy(self._tasks[previous_id])
@@ -2153,44 +1810,26 @@ class TaskManagerWidget(QWidget):
             return False
         old_path = self._task_path_for_id(previous_id) if previous_id else None
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
+            write_json_file(target, data)
         except OSError as exc:
             QMessageBox.warning(self, "无法保存", str(exc))
             return False
         if previous_id and previous_id != task_id and old_path is not None:
             mode = str(self.cleanup_mode_combo.currentData() or "recycle")
-            try:
-                if mode == "permanent":
-                    old_path.unlink()
-                else:
-                    send_to_recycle_bin(old_path)
-            except (OSError, TrashError) as exc:
-                rollback_error: Exception | None = None
-                try:
-                    if mode == "permanent":
-                        target.unlink()
-                    else:
-                        send_to_recycle_bin(target)
-                except (OSError, TrashError) as rollback_exc:
-                    rollback_error = rollback_exc
+
+            def _restore_task() -> None:
                 if old_data is not None:
                     self._tasks[previous_id] = old_data
-                self._selected_task = previous_id
+                self._task_state.selected = previous_id
                 self._refresh_task_list(select_id=previous_id)
-                if rollback_error is None:
-                    message = f"重命名失败，已回滚：{exc}"
-                else:
-                    message = f"重命名失败，回滚删除新文件也失败：{exc}；{rollback_error}，新旧两个文件可能都存在。"
-                QMessageBox.warning(self, "保存失败", message)
+
+            if self._rollback_rename(old_path, target, mode, _restore_task):
                 return False
         if previous_id and previous_id != task_id:
             self._tasks.pop(previous_id, None)
-            self._unsaved_task_ids.discard(previous_id)
+            self._task_state.unsaved.discard(previous_id)
         self._tasks[task_id] = data
-        self._unsaved_task_ids.discard(task_id)
+        self._task_state.unsaved.discard(task_id)
         task_order = self.settings.get("task_order")
         if not isinstance(task_order, list):
             task_order = []
@@ -2204,15 +1843,21 @@ class TaskManagerWidget(QWidget):
             task_order.append(task_id)
         self.settings["task_order"] = task_order
         execution_counts = self.settings.get("task_execution_counts")
-        if isinstance(execution_counts, dict) and previous_id and previous_id != task_id:
-            if previous_id in execution_counts:
-                execution_counts[task_id] = execution_counts.pop(previous_id)
+        if (
+            isinstance(execution_counts, dict)
+            and previous_id
+            and previous_id != task_id
+            and previous_id in execution_counts
+        ):
+            execution_counts[task_id] = execution_counts.pop(previous_id)
         try:
-            save_settings(self.settings_path, self.settings)
+            self.settings = update_settings(self.settings_path, self.settings)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "顺序保存失败", f"任务已保存，但任务顺序未持久化：{exc}")
-        self._selected_task = task_id
-        self._creating_task = False
+            QMessageBox.warning(
+                self, "顺序保存失败", f"任务已保存，但任务顺序未持久化：{exc}"
+            )
+        self._task_state.selected = task_id
+        self._task_state.creating = False
         self._dirty = False
         self._refresh_task_list(select_id=task_id)
         self.tasks_changed.emit()
@@ -2241,7 +1886,7 @@ class TaskManagerWidget(QWidget):
                     errors.append(f"动作 {index}: {message}")
         return errors
 
-    # ------------------------------------------------------------ actions
+    # 动作
 
     def _on_action_selection_changed(self, _row: int) -> None:
         self._update_operation_bar()
@@ -2253,7 +1898,7 @@ class TaskManagerWidget(QWidget):
         self._refresh_list(self.actions_list, self._actions_buffer)
 
     def _refresh_list(self, qlist: QListWidget, buffer: list[dict[str, Any]]) -> None:
-        """Rebuild a numbered description list from a data buffer."""
+        """根据数据缓冲区重建带序号的描述列表。"""
         qlist.blockSignals(True)
         qlist.clear()
         for index, data in enumerate(buffer, start=1):
@@ -2264,8 +1909,10 @@ class TaskManagerWidget(QWidget):
         qlist.blockSignals(False)
         self._update_operation_bar()
 
-    def _sync_list_order(self, qlist: QListWidget, buffer: list[dict[str, Any]]) -> None:
-        """Reorder ``buffer`` to match the visual order of ``qlist`` after drag-drop."""
+    def _sync_list_order(
+        self, qlist: QListWidget, buffer: list[dict[str, Any]]
+    ) -> None:
+        """拖拽排序后按 ``qlist`` 的界面顺序重排 ``buffer``。"""
         new_order: list[dict[str, Any]] = []
         for i in range(qlist.count()):
             item = qlist.item(i)
@@ -2285,11 +1932,10 @@ class TaskManagerWidget(QWidget):
             qlist.blockSignals(False)
 
     def _sync_actions_from_list(self) -> None:
-        """Reorder _actions_buffer to match the visual order after drag-drop."""
+        """拖拽排序后按界面顺序重排 ``_actions_buffer``。"""
         self._sync_list_order(self.actions_list, self._actions_buffer)
 
     def _on_actions_rows_moved(self) -> None:
-        """Sync buffer after internal drag-drop reorder."""
         self._sync_actions_from_list()
         self._mark_dirty()
 
@@ -2297,9 +1943,7 @@ class TaskManagerWidget(QWidget):
         self._show_embedded_editor("task_action", index=-1, initial={})
 
     def _edit_action(self) -> None:
-        self._edit_entry(
-            self.actions_list, self._actions_buffer, "task_action", "动作"
-        )
+        self._edit_entry(self.actions_list, self._actions_buffer, "task_action", "动作")
 
     def _edit_entry(
         self,
@@ -2308,7 +1952,7 @@ class TaskManagerWidget(QWidget):
         mode: str,
         kind_label: str,
     ) -> None:
-        """Open the embedded editor for the selected action/step."""
+        """为选中的动作/步骤打开内嵌编辑器。"""
         row = qlist.currentRow()
         if row < 0 or row >= len(buffer):
             QMessageBox.information(
@@ -2334,7 +1978,7 @@ class TaskManagerWidget(QWidget):
         refresh: Callable[[], None],
         kind_label: str,
     ) -> None:
-        """Copy the selected action/step below it."""
+        """复制选中的动作/步骤，插入到其下方。"""
         row = qlist.currentRow()
         if row < 0 or row >= len(buffer):
             QMessageBox.information(
@@ -2352,7 +1996,6 @@ class TaskManagerWidget(QWidget):
         buffer: list[dict[str, Any]],
         refresh: Callable[[], None],
     ) -> None:
-        """Remove the selected action/step."""
         row = qlist.currentRow()
         if row < 0 or row >= len(buffer):
             return
@@ -2361,7 +2004,6 @@ class TaskManagerWidget(QWidget):
         self._mark_dirty()
 
     def _run_single_action(self) -> None:
-        """Run only the selected action."""
         self._run_single_entry(
             self._actions_buffer,
             self.actions_list.currentRow(),
@@ -2379,7 +2021,7 @@ class TaskManagerWidget(QWidget):
         kind_label: str,
         default_name: str,
     ) -> None:
-        """Expand and emit one selected action/step for a debug run."""
+        """展开选中的单个动作/步骤，发出信号供调试运行。"""
         if row < 0 or row >= len(entries):
             QMessageBox.information(
                 self, f"运行{kind_label}", f"请先选择一个{kind_label}。"
@@ -2410,24 +2052,30 @@ class TaskManagerWidget(QWidget):
             "actions": deep_copy(self._actions_buffer),
         }
         self.embedded_json_viewer.load_data(data)
-        self._embedded_previous_panel = self.editor_stack.currentWidget()
+        self._embedded.previous_panel = self.editor_stack.currentWidget()
         self.editor_stack.setCurrentWidget(self.embedded_json_viewer_panel)
 
     def _on_dump_tree_clicked(self) -> None:
         self._dump_ui_tree()
 
     def _on_copy_package_clicked(self) -> None:
-        try:
-            adb = self._connect_to_mumu()
-            package = adb.current_package()
-        except Exception as exc:
-            self._show_timed_warning("获取包名失败", str(exc))
-            return
+        self.spawn_background(
+            lambda: self._query_foreground_package(),
+            self._apply_copied_package,
+            lambda message: self._show_timed_warning("获取包名失败", message),
+        )
+
+    def _query_foreground_package(self) -> str:
+        """后台部分：连接设备并读取前台应用包名。"""
+        adb = self._connect_to_mumu()
+        package = adb.current_package()
         if not package:
-            self._show_timed_warning("获取包名失败", "未识别到前台应用包名。")
-            return
-        QGuiApplication.clipboard().setText(package)
-        self.feedback_requested.emit(package)
+            raise ValueError("未识别到前台应用包名。")
+        return package
+
+    def _apply_copied_package(self, package: object) -> None:
+        QGuiApplication.clipboard().setText(str(package))
+        self.feedback_requested.emit(str(package))
 
     def _on_view_json_clicked(self) -> None:
         if self.left_tabs.currentIndex() == 0:
@@ -2440,7 +2088,7 @@ class TaskManagerWidget(QWidget):
             return
 
         thread = QThread(self)
-        worker = _UiTreeDumpWorker(self.settings)
+        worker = UiTreeDumpWorker(self.settings)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._on_ui_tree_dump_succeeded)
@@ -2456,7 +2104,7 @@ class TaskManagerWidget(QWidget):
     def _on_ui_tree_dump_succeeded(self, snapshot: UiSnapshot, adb: AdbClient) -> None:
         self._ui_tree_adb = adb
         self.embedded_ui_tree_viewer.load_snapshot(snapshot)
-        self._embedded_previous_panel = self.editor_stack.currentWidget()
+        self._embedded.previous_panel = self.editor_stack.currentWidget()
         self.editor_stack.setCurrentWidget(self.embedded_ui_tree_viewer_panel)
 
     def _on_ui_tree_dump_failed(self, message: str) -> None:
@@ -2466,8 +2114,22 @@ class TaskManagerWidget(QWidget):
         self._ui_tree_thread = None
         self._ui_tree_worker = None
 
+    def shutdown(self) -> None:
+        """请求 UI 树抓取线程停止并等待其退出。
+
+        由主窗口的关闭流程调用，保证抓取仍在进行时控件（及其子 QThread）
+        能被安全销毁。底层 ADB 命令自带超时，因此有界等待必然结束。
+        """
+
+        thread = self._ui_tree_thread
+        worker = self._ui_tree_worker
+        if thread is not None and thread.isRunning() and worker is not None:
+            worker.request_stop()
+            thread.wait(15000)
+        self.wait_background_tasks(30000)
+
     def _show_timed_warning(self, title: str, message: str) -> None:
-        """Show a non-modal notification that disappears after five seconds."""
+        """显示一条五秒后自动消失的非模态通知。"""
 
         if self._task_toast is not None:
             self._task_toast.close()
@@ -2481,23 +2143,28 @@ class TaskManagerWidget(QWidget):
         if self._task_toast is popup:
             self._task_toast = None
 
-    def set_pointer_location(self, enabled: bool) -> bool:
-        """Toggle Android's on-screen pointer coordinate overlay."""
+    def set_pointer_location(self, enabled: bool) -> None:
+        """开启或关闭 Android 的屏幕指针坐标悬浮层。
 
-        try:
-            adb = self._connect_to_mumu()
-            adb.shell(
-                "settings",
-                "put",
-                "system",
-                "pointer_location",
-                "1" if enabled else "0",
-            )
-        except Exception as exc:
-            title = "显示坐标失败" if enabled else "隐藏坐标失败"
-            self._show_timed_warning(title, str(exc))
-            return False
-        return True
+        在后台线程执行；失败时通过 :attr:`pointer_location_failed` 通知，
+        以便调用方回退开关状态。
+        """
+
+        self.spawn_background(
+            lambda: self._set_pointer_location_blocking(enabled),
+            None,
+            lambda _message: self.pointer_location_failed.emit(enabled),
+        )
+
+    def _set_pointer_location_blocking(self, enabled: bool) -> None:
+        adb = self._connect_to_mumu()
+        adb.shell(
+            "settings",
+            "put",
+            "system",
+            "pointer_location",
+            "1" if enabled else "0",
+        )
 
     def _connect_to_mumu(self) -> AdbClient:
         return connect_to_mumu(self.settings)
@@ -2514,56 +2181,37 @@ class TaskManagerWidget(QWidget):
             return
         self._active_tab_index = index
         self.editor_stack.setCurrentIndex(index)
-        if index == 1 and self.compound_list.currentRow() < 0 and self.compound_list.count():
+        if (
+            index == 1
+            and self.compound_list.currentRow() < 0
+            and self.compound_list.count()
+        ):
             self.compound_list.setCurrentRow(0)
         self._update_operation_bar()
 
-
-
-# ------------------------------------------------------------ style
+    # 样式
 
     @staticmethod
     def _style_sheet() -> str:
         return (
             "\n"
-            "            QWidget { background: transparent; color: #193331; }\n"
-            "            QDialog { background: #f2f6f4; color: #193331; }\n"
+            + _s.PANEL_BASE_QSS
+            + "            QDialog { background: #f2f6f4; color: #193331; }\n"
             "            QFrame#taskManagerLeftPanel {\n"
             "                background: #ffffff;\n"
             "                border: 1px solid #e0e9e6;\n"
             "                border-radius: 0;\n"
             "            }\n"
             "            QFrame#taskManagerEditorPanel {\n"
-                "                background: #ffffff;\n"
+            "                background: #ffffff;\n"
             "                border: none;\n"
             "                border-radius: 0;\n"
             "            }\n"
             "            QFrame#taskManagerRightPanel {\n"
             "                background: #ffffff;\n"
             "            }\n"
-            "            QFrame#taskManagerOperationSeparator {\n"
-            "                background: #d9e5e1;\n"
-            "                min-height: 30px;\n"
-            "                max-height: 30px;\n"
-            "            }\n"
-            "            QFrame#taskManagerOperationStatus {\n"
-            "                background: #edf7f4;\n"
-            "                border: 1px solid #d2e7e1;\n"
-            "                border-radius: 9px;\n"
-            "            }\n"
-            "            QLabel#taskManagerOperationLabel {\n"
-            "                background: #e1f1ec;\n"
-            "                border: 1px solid #b9d9d0;\n"
-            "                border-radius: 8px;\n"
-            "                color: #176b62;\n"
-            "                font-size: 12px;\n"
-            "                font-weight: 700;\n"
-            "                min-width: 86px;\n"
-            "                min-height: 32px;\n"
-            "                padding: 0 12px;\n"
-            "            }\n"
             "            QLabel#taskManagerDirtyLabel {\n"
-                "                color: #a06b1e;\n"
+            "                color: #a06b1e;\n"
             "                font-size: 11px;\n"
             "                font-weight: 650;\n"
             "                padding: 0 2px;\n"
@@ -2626,12 +2274,7 @@ class TaskManagerWidget(QWidget):
             "                font-size: 18px;\n"
             "                font-weight: 750;\n"
             "            }\n"
-            "            QLabel#settingsCardTitle {\n"
-            "                color: #244340;\n"
-            "                font-size: 14px;\n"
-            "                font-weight: 700;\n"
-            "                padding: 4px 0;\n"
-            "            }\n"
+            + _s.CARD_TITLE_QSS
             + _s.OCR_FEEDBACK_QSS
             + "            QFormLayout QLabel { color: #49615f; font-size: 13px; font-weight: 500; }\n"
             + _s.MESSAGE_BOX_QSS

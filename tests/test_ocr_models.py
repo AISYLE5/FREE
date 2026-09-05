@@ -7,19 +7,20 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import Self
 from unittest.mock import patch
 
 from free_app.ocr_models import (
     DET_MODELS,
-    DownloadCancelled,
     MODEL_SOURCES,
-    OcrError,
     PP_OCR_MODELS,
     REC_MODELS,
     SOURCE_KEYS,
+    DownloadCancelled,
+    OcrError,
+    _dict_file_name,
     _download_dict,
     _download_file,
-    _dict_file_name,
     _extract_tar,
     delete_model,
     download_model,
@@ -91,7 +92,7 @@ class OcrModelsTests(unittest.TestCase):
 
     def test_model_sources_are_registered_with_labels_and_layouts(self) -> None:
         self.assertEqual(set(MODEL_SOURCES), {"baidu", "modelscope", "huggingface"})
-        for key, descriptor in MODEL_SOURCES.items():
+        for descriptor in MODEL_SOURCES.values():
             self.assertTrue(descriptor["label"])
             self.assertIn(descriptor["layout"], {"tar", "files"})
 
@@ -120,7 +121,9 @@ class OcrModelsTests(unittest.TestCase):
             root = Path(directory)
             with patch(
                 "free_app.ocr_models._download_file",
-                side_effect=lambda _url, destination, _callback, _cancel_event=None: destination.write_bytes(tar_bytes),
+                side_effect=lambda _url, destination, _callback, _cancel_event=None: (
+                    destination.write_bytes(tar_bytes)
+                ),
             ):
                 target = download_model("PP-OCRv6_small_det", root)
 
@@ -141,7 +144,9 @@ class OcrModelsTests(unittest.TestCase):
             root = Path(directory)
             with patch(
                 "free_app.ocr_models._download_file",
-                side_effect=lambda _url, destination, _callback, _cancel_event=None: destination.write_bytes(buffer.getvalue()),
+                side_effect=lambda _url, destination, _callback, _cancel_event=None: (
+                    destination.write_bytes(buffer.getvalue())
+                ),
             ):
                 with self.assertRaises(OcrError):
                     download_model("PP-OCRv6_small_det", root, source="baidu")
@@ -153,7 +158,7 @@ class OcrModelsTests(unittest.TestCase):
         class ChunkedResponse:
             headers = {"Content-Length": "1024"}
 
-            def __enter__(self) -> "ChunkedResponse":
+            def __enter__(self) -> Self:
                 return self
 
             def __exit__(self, *_args: object) -> None:
@@ -165,12 +170,14 @@ class OcrModelsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch(
-                "free_app.ocr_models.urllib.request.urlopen",
-                side_effect=lambda *_args, **_kwargs: ChunkedResponse(),
+            with (
+                patch(
+                    "free_app.ocr_models.urllib.request.urlopen",
+                    side_effect=lambda *_args, **_kwargs: ChunkedResponse(),
+                ),
+                self.assertRaises(DownloadCancelled),
             ):
-                with self.assertRaises(DownloadCancelled):
-                    download_model("PP-OCRv6_small_det", root, cancel_event=event)
+                download_model("PP-OCRv6_small_det", root, cancel_event=event)
             self.assertFalse((root / "PP-OCRv6_small_det_infer.tar").exists())
 
     def test_download_file_reports_progress_and_retries_transient_error(self) -> None:
@@ -180,7 +187,7 @@ class OcrModelsTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.chunks = iter((b"abc", b""))
 
-            def __enter__(self) -> "Response":
+            def __enter__(self) -> Self:
                 return self
 
             def __exit__(self, *_args: object) -> None:
@@ -209,17 +216,19 @@ class OcrModelsTests(unittest.TestCase):
     def test_download_file_rejects_exhausted_or_empty_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "model.tar"
-            with patch(
-                "free_app.ocr_models.urllib.request.urlopen",
-                side_effect=[OSError("first"), OSError("second")],
+            with (
+                patch(
+                    "free_app.ocr_models.urllib.request.urlopen",
+                    side_effect=[OSError("first"), OSError("second")],
+                ),
+                self.assertRaises(OcrError),
             ):
-                with self.assertRaises(OcrError):
-                    _download_file("https://example.invalid/model", destination, None)
+                _download_file("https://example.invalid/model", destination, None)
 
             class EmptyResponse:
                 headers = {}
 
-                def __enter__(self) -> "EmptyResponse":
+                def __enter__(self) -> Self:
                     return self
 
                 def __exit__(self, *_args: object) -> None:
@@ -228,7 +237,10 @@ class OcrModelsTests(unittest.TestCase):
                 def read(self, _size: int) -> bytes:
                     return b""
 
-            with patch("free_app.ocr_models.urllib.request.urlopen", return_value=EmptyResponse()):
+            with patch(
+                "free_app.ocr_models.urllib.request.urlopen",
+                return_value=EmptyResponse(),
+            ):
                 with self.assertRaisesRegex(OcrError, "结果为空"):
                     _download_file("https://example.invalid/empty", destination, None)
 
@@ -245,13 +257,15 @@ class OcrModelsTests(unittest.TestCase):
         self.assertEqual(download.call_args.args[0].split("/")[2], "gitee.com")
 
     def test_download_dict_reports_failure_when_all_sources_fail(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with patch(
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
                 "free_app.ocr_models._download_file",
                 side_effect=OcrError("unavailable"),
-            ):
-                with self.assertRaises(OcrError):
-                    _download_dict("ppocrv6_dict.txt", Path(directory) / "dict.txt")
+            ),
+            self.assertRaises(OcrError),
+        ):
+            _download_dict("ppocrv6_dict.txt", Path(directory) / "dict.txt")
 
     def test_download_model_auto_falls_back_to_next_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -270,10 +284,13 @@ class OcrModelsTests(unittest.TestCase):
                 if source == "baidu":
                     raise OcrError("primary source unavailable")
 
-            with patch(
-                "free_app.ocr_models._download_model_from_source",
-                side_effect=fake_download,
-            ), patch("free_app.ocr_models._is_installed", side_effect=[False, True]):
+            with (
+                patch(
+                    "free_app.ocr_models._download_model_from_source",
+                    side_effect=fake_download,
+                ),
+                patch("free_app.ocr_models._is_installed", side_effect=[False, True]),
+            ):
                 result = download_model("PP-OCRv6_small_det", root)
 
             self.assertEqual(result, root / "PP-OCRv6_small_det")
@@ -293,10 +310,13 @@ class OcrModelsTests(unittest.TestCase):
             ) -> None:
                 raise OcrError(f"source {source} unavailable")
 
-            with patch(
-                "free_app.ocr_models._download_model_from_source",
-                side_effect=fake_download,
-            ), patch("free_app.ocr_models._is_installed", side_effect=[False]):
+            with (
+                patch(
+                    "free_app.ocr_models._download_model_from_source",
+                    side_effect=fake_download,
+                ),
+                patch("free_app.ocr_models._is_installed", side_effect=[False]),
+            ):
                 with self.assertRaisesRegex(OcrError, "OCR 模型下载失败"):
                     download_model("PP-OCRv6_small_det", root)
 
@@ -315,10 +335,13 @@ class OcrModelsTests(unittest.TestCase):
             ) -> None:
                 attempted.append(source)
 
-            with patch(
-                "free_app.ocr_models._download_model_from_source",
-                side_effect=fake_download,
-            ), patch("free_app.ocr_models._is_installed", side_effect=[False, True]):
+            with (
+                patch(
+                    "free_app.ocr_models._download_model_from_source",
+                    side_effect=fake_download,
+                ),
+                patch("free_app.ocr_models._is_installed", side_effect=[False, True]),
+            ):
                 download_model("PP-OCRv6_small_det", root, source="modelscope")
 
             self.assertEqual(attempted, ["modelscope"])
@@ -334,12 +357,16 @@ class OcrModelsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
-            def fake_download(url, destination, progress_callback=None, cancel_event=None) -> None:
+            def fake_download(
+                url, destination, progress_callback=None, cancel_event=None
+            ) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"file-bytes")
 
             with patch("free_app.ocr_models._download_file", side_effect=fake_download):
-                target = download_model("PP-OCRv6_small_det", root, source="huggingface")
+                target = download_model(
+                    "PP-OCRv6_small_det", root, source="huggingface"
+                )
 
             self.assertEqual(target, root / "PP-OCRv6_small_det")
             self.assertTrue((target / "inference.onnx").is_file())
@@ -349,14 +376,21 @@ class OcrModelsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
-            def fake_download(url, destination, progress_callback=None, cancel_event=None) -> None:
+            def fake_download(
+                url, destination, progress_callback=None, cancel_event=None
+            ) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"file-bytes")
 
-            with patch("free_app.ocr_models._download_file", side_effect=fake_download), patch(
-                "free_app.ocr_models._download_dict",
-                side_effect=lambda dict_file, target, cancel_event=None: target.write_text("dict"),
-            ) as download_dict:
+            with (
+                patch("free_app.ocr_models._download_file", side_effect=fake_download),
+                patch(
+                    "free_app.ocr_models._download_dict",
+                    side_effect=lambda dict_file, target, cancel_event=None: (
+                        target.write_text("dict")
+                    ),
+                ) as download_dict,
+            ):
                 target = download_model("PP-OCRv6_small_rec", root, source="modelscope")
 
             download_dict.assert_called_once()
@@ -384,7 +418,9 @@ class OcrModelsTests(unittest.TestCase):
             def fake_trash(path: Path) -> None:
                 shutil.rmtree(path)
 
-            with patch("free_app.ocr_models.send_to_recycle_bin", side_effect=fake_trash) as trash:
+            with patch(
+                "free_app.ocr_models.send_to_recycle_bin", side_effect=fake_trash
+            ) as trash:
                 delete_model("PP-OCRv6_small_rec", root)
 
             trash.assert_called_once_with(model_dir)
@@ -395,19 +431,25 @@ class OcrModelsTests(unittest.TestCase):
             root = Path(directory)
             model_dir = root / "PP-OCRv6_small_rec"
             model_dir.mkdir()
-            with patch(
-                "free_app.ocr_models.send_to_recycle_bin",
-                side_effect=TrashError("发送到回收站失败"),
+            with (
+                patch(
+                    "free_app.ocr_models.send_to_recycle_bin",
+                    side_effect=TrashError("发送到回收站失败"),
+                ),
+                self.assertRaisesRegex(OcrError, "回收站"),
             ):
-                with self.assertRaisesRegex(OcrError, "回收站"):
-                    delete_model("PP-OCRv6_small_rec", root)
+                delete_model("PP-OCRv6_small_rec", root)
 
     def test_model_root_resolves_relative_and_absolute_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            self.assertEqual(model_root({"ocr_model_directory": "models"}, base), base / "models")
+            self.assertEqual(
+                model_root({"ocr_model_directory": "models"}, base), base / "models"
+            )
             absolute = base / "custom" / "models"
-            self.assertEqual(model_root({"ocr_model_directory": str(absolute)}, base), absolute)
+            self.assertEqual(
+                model_root({"ocr_model_directory": str(absolute)}, base), absolute
+            )
 
     def test_dict_file_name_maps_v5_and_v6_recognizers(self) -> None:
         self.assertEqual(_dict_file_name("PP-OCRv5_mobile_rec"), "ppocrv5_dict.txt")
@@ -439,7 +481,9 @@ class OcrModelsTests(unittest.TestCase):
             _extract_tar(tar_path, target)
 
             self.assertTrue((target / "inference.onnx").is_file())
-            self.assertNotEqual((target / "inference.yml").read_text(encoding="utf-8"), "old")
+            self.assertNotEqual(
+                (target / "inference.yml").read_text(encoding="utf-8"), "old"
+            )
             self.assertFalse(staging.exists())
 
     def test_extract_tar_rejects_missing_inference_model(self) -> None:
@@ -486,12 +530,14 @@ class OcrModelsTests(unittest.TestCase):
             model_dir = root / "PP-OCRv6_small_det"
             model_dir.mkdir()
 
-            with patch(
-                "free_app.ocr_models.send_to_recycle_bin",
-                side_effect=lambda _path: None,
+            with (
+                patch(
+                    "free_app.ocr_models.send_to_recycle_bin",
+                    side_effect=lambda _path: None,
+                ),
+                self.assertRaisesRegex(OcrError, "未能移除"),
             ):
-                with self.assertRaisesRegex(OcrError, "未能移除"):
-                    delete_model("PP-OCRv6_small_det", root)
+                delete_model("PP-OCRv6_small_det", root)
 
 
 if __name__ == "__main__":

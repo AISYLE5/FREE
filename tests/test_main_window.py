@@ -8,26 +8,39 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from free_app.adb import Device
+from free_app.config import load_json
+from free_app.main_window import MainWindow
+from free_app.models import BatchRunResult, RunResult, RunStatus
+from free_app.settings_dialog import SettingsDialog
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
-from free_app.adb import Device
-from free_app.config import load_json
-from free_app.models import BatchRunResult, RunResult, RunStatus
-from free_app.main_window import MainWindow
-from free_app.settings_dialog import SettingsDialog
-
 
 class FakeScrollBar:
     def __init__(self) -> None:
-        self.value = 0
+        self._value = 0
+
+    def value(self) -> int:
+        return self._value
 
     def maximum(self) -> int:
         return 1
 
     def setValue(self, value: int) -> None:
-        self.value = value
+        self._value = value
+
+
+class FakeTimer:
+    def __init__(self) -> None:
+        self._active = False
+
+    def isActive(self) -> bool:
+        return self._active
+
+    def start(self) -> None:
+        self._active = True
 
 
 class FakeLogView:
@@ -46,7 +59,8 @@ class LogTarget:
     def __init__(self) -> None:
         self.log_view = FakeLogView()
         self.log_file = io.StringIO()
-        self.log_output_level = "all"
+        self._log_pending: list[str] = []
+        self._log_timer = FakeTimer()
 
 
 class MainWindowTests(unittest.TestCase):
@@ -65,7 +79,7 @@ class MainWindowTests(unittest.TestCase):
             shutil.copytree(project_actions, config_directory / "actions")
 
     def test_close_event_ignored_when_task_manager_has_unsaved_changes(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._prepare_config(base)
@@ -85,7 +99,7 @@ class MainWindowTests(unittest.TestCase):
                 window.deleteLater()
 
     def test_close_event_accepted_without_unsaved_changes(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._prepare_config(base)
@@ -168,23 +182,43 @@ class MainWindowTests(unittest.TestCase):
                 window = MainWindow(base)
             try:
                 address = "127.0.0.1:16416"
+
+                def wait_device_state() -> None:
+                    task = window._device_task
+                    if task is not None:
+                        task.wait(5000)
+                    application.processEvents()
+
                 ready_adb = FakeAdb([Device(address, "device")])
-                with patch.object(window, "_make_adb", return_value=ready_adb), patch.object(
-                    window, "_mumu_forwarded_adb_address", return_value=address
+                with (
+                    patch.object(window, "_make_adb", return_value=ready_adb),
+                    patch(
+                        "free_app.main_window.mumu_adb_address_from_settings",
+                        return_value=address,
+                    ),
                 ):
                     window._update_device_status()
+                    wait_device_state()
                 self.assertEqual(window.device_label.property("state"), "ready")
                 self.assertIn(address, ready_adb.connected)
 
                 missing_adb = FakeAdb([])
-                with patch.object(window, "_make_adb", return_value=missing_adb), patch.object(
-                    window, "_mumu_forwarded_adb_address", return_value=address
+                with (
+                    patch.object(window, "_make_adb", return_value=missing_adb),
+                    patch(
+                        "free_app.main_window.mumu_adb_address_from_settings",
+                        return_value=address,
+                    ),
                 ):
                     window._update_device_status()
+                    wait_device_state()
                 self.assertEqual(window.device_label.property("state"), "error")
 
-                with patch.object(window, "_make_adb", side_effect=OSError("adb missing")):
+                with patch.object(
+                    window, "_make_adb", side_effect=OSError("adb missing")
+                ):
                     window._update_device_status()
+                    wait_device_state()
                 self.assertEqual(window.device_label.property("state"), "error")
                 self.assertIn("ADB", window.device_label.text())
             finally:
@@ -230,14 +264,16 @@ class MainWindowTests(unittest.TestCase):
             worker.task_started = FakeSignal()
             worker.task_finished = FakeSignal()
             try:
-                window.settings["log_max_files"] = 0
+                window.settings["max_log_files"] = 0
                 window.run_mode = "single"
                 task = window.tasks[0]
-                with patch.object(window, "_make_adb", return_value=object()), patch(
-                    "free_app.main_window.QThread", FakeThread
-                ), patch(
-                    "free_app.main_window.TaskWorker", return_value=worker
-                ) as worker_class:
+                with (
+                    patch.object(window, "_make_adb", return_value=object()),
+                    patch("free_app.main_window.QThread", FakeThread),
+                    patch(
+                        "free_app.main_window.TaskWorker", return_value=worker
+                    ) as worker_class,
+                ):
                     self.assertTrue(window._prepare_run([task]))
 
                 worker_class.assert_called_once()
@@ -298,11 +334,13 @@ class MainWindowTests(unittest.TestCase):
             try:
                 window.run_mode = "debug"
                 task = window.tasks[0]
-                with patch.object(window, "_make_adb", return_value=object()), patch(
-                    "free_app.main_window.QThread", FakeThread
-                ), patch(
-                    "free_app.main_window.TaskWorker", return_value=worker
-                ) as worker_class:
+                with (
+                    patch.object(window, "_make_adb", return_value=object()),
+                    patch("free_app.main_window.QThread", FakeThread),
+                    patch(
+                        "free_app.main_window.TaskWorker", return_value=worker
+                    ) as worker_class,
+                ):
                     self.assertTrue(
                         window._prepare_run(
                             [task],
@@ -321,7 +359,9 @@ class MainWindowTests(unittest.TestCase):
                 window.deleteLater()
                 application.processEvents()
 
-    def test_batch_result_signals_update_task_states_and_mark_skipped_tasks(self) -> None:
+    def test_batch_result_signals_update_task_states_and_mark_skipped_tasks(
+        self,
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -413,9 +453,10 @@ class MainWindowTests(unittest.TestCase):
             with patch.object(MainWindow, "_update_device_status"):
                 window = MainWindow(base)
             try:
-                with patch.object(window, "_update_device_status") as update, patch.object(
-                    window, "_finalize_refresh_button"
-                ) as finalize:
+                with (
+                    patch.object(window, "_update_device_status") as update,
+                    patch.object(window, "_finalize_refresh_button") as finalize,
+                ):
                     update.side_effect = lambda finalize_refresh=False: finalize()
                     window._refresh_device()
                     window._refresh_device()
@@ -442,17 +483,22 @@ class MainWindowTests(unittest.TestCase):
                 window = MainWindow(base)
             try:
                 original_count = window.task_list.count()
-                (base / "config" / "tasks" / "broken.json").write_text("{", encoding="utf-8")
-                with patch("free_app.main_window.QMessageBox.warning") as warning, patch.object(
-                    window, "_refresh_device"
-                ) as device_refresh:
+                (base / "config" / "tasks" / "broken.json").write_text(
+                    "{", encoding="utf-8"
+                )
+                with (
+                    patch("free_app.main_window.QMessageBox.warning") as warning,
+                    patch.object(window, "_refresh_device") as device_refresh,
+                ):
                     window._refresh_all()
 
                 self.assertEqual(window.task_list.count(), original_count)
                 self.assertEqual(len(window.config_errors), 1)
                 self.assertEqual(window.config_errors[0].path.name, "broken.json")
                 warning.assert_called_once()
-                self.assertIn("broken.json已损坏，跳过该任务", warning.call_args.args[2])
+                self.assertIn(
+                    "broken.json已损坏，跳过该任务", warning.call_args.args[2]
+                )
                 device_refresh.assert_called_once()
             finally:
                 window.close()
@@ -464,8 +510,9 @@ class MainWindowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._prepare_config(base)
-            with patch.object(MainWindow, "_update_device_status"), patch.object(
-                SettingsDialog, "_refresh_mumu_instances"
+            with (
+                patch.object(MainWindow, "_update_device_status"),
+                patch.object(SettingsDialog, "_refresh_mumu_instances"),
             ):
                 window = MainWindow(base)
                 try:
@@ -513,7 +560,9 @@ class MainWindowTests(unittest.TestCase):
                 application.processEvents()
                 self.assertIs(window.pages.currentWidget(), window.task_manager_page)
                 self.assertIsNotNone(window._task_manager_widget)
-                self.assertEqual(window._task_manager_widget.task_list.count(), len(window.tasks))
+                self.assertEqual(
+                    window._task_manager_widget.task_list.count(), len(window.tasks)
+                )
 
                 window._close_task_manager_page()
                 self.assertIs(window.pages.currentWidget(), window.main_page)
@@ -522,7 +571,9 @@ class MainWindowTests(unittest.TestCase):
                 window.deleteLater()
                 application.processEvents()
 
-    def test_task_manager_back_returns_through_embedded_page_before_closing(self) -> None:
+    def test_task_manager_back_returns_through_embedded_page_before_closing(
+        self,
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -563,7 +614,9 @@ class MainWindowTests(unittest.TestCase):
                 window._open_task_manager()
                 application.processEvents()
                 self.assertTrue(window.task_manager_copy_package_button.isVisible())
-                self.assertEqual(window.task_manager_copy_package_button.text(), "获取包名")
+                self.assertEqual(
+                    window.task_manager_copy_package_button.text(), "获取包名"
+                )
                 with patch("free_app.main_window.QToolTip.showText") as tooltip:
                     window._show_task_manager_feedback("tv.danmaku.bili")
                 self.assertEqual(tooltip.call_args.args[1], "tv.danmaku.bili")
@@ -628,9 +681,7 @@ class MainWindowTests(unittest.TestCase):
                 manager = window._task_manager_widget
                 manager.task_name_edit.setText("处理广告")
                 manager.task_package_edit.setText("tv.danmaku.bili")
-                manager._actions_buffer = [
-                    {"type": "compound", "name": "bilibili_ad"}
-                ]
+                manager._actions_buffer = [{"type": "compound", "name": "bilibili_ad"}]
                 manager._refresh_actions_list()
                 manager.actions_list.setCurrentRow(0)
 
@@ -667,7 +718,7 @@ class MainWindowTests(unittest.TestCase):
                         "type": "click",
                         "locate": "ui",
                         "target": "text",
-                        "text": "${qq_group_name}",
+                        "texts": ["${qq_group_name}"],
                     }
                 ]
                 manager._refresh_actions_list()
@@ -677,7 +728,7 @@ class MainWindowTests(unittest.TestCase):
                     manager.run_action_button.click()
 
                 task = prepare.call_args.args[0][0]
-                self.assertEqual(task.actions[0].parameters["text"], "测试群")
+                self.assertEqual(task.actions[0].parameters["texts"], ["测试群"])
             finally:
                 with patch(
                     "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
@@ -723,8 +774,9 @@ class MainWindowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._prepare_config(base)
-            with patch.object(MainWindow, "_update_device_status"), patch.object(
-                SettingsDialog, "_refresh_mumu_instances"
+            with (
+                patch.object(MainWindow, "_update_device_status"),
+                patch.object(SettingsDialog, "_refresh_mumu_instances"),
             ):
                 window = MainWindow(base)
                 try:
@@ -735,6 +787,7 @@ class MainWindowTests(unittest.TestCase):
                     )
                     window._settings_widget.ocr_test_finished.emit()
                     application.processEvents()
+                    window._flush_log_queue()
 
                     self.assertIn(
                         "OCR 测试结果：识别成功，共 2 行",
@@ -750,6 +803,7 @@ class MainWindowTests(unittest.TestCase):
         target = LogTarget()
 
         MainWindow._append_log(target, "[12:34:56] worker message")
+        MainWindow._flush_log_queue(target)
 
         self.assertEqual(target.log_view.lines, ["[12:34:56] worker message"])
         self.assertEqual(target.log_file.getvalue(), "[12:34:56] worker message\n")
@@ -758,24 +812,32 @@ class MainWindowTests(unittest.TestCase):
         target = LogTarget()
 
         MainWindow._append_log(target, "plain message")
+        MainWindow._flush_log_queue(target)
 
-        self.assertRegex(target.log_view.lines[0], r"^\[\d{2}:\d{2}:\d{2}\] plain message$")
+        self.assertRegex(
+            target.log_view.lines[0], r"^\[\d{2}:\d{2}:\d{2}\] plain message$"
+        )
 
-    def test_append_log_filters_noise_when_summary_output_level(self) -> None:
+    def test_append_log_writes_every_line(self) -> None:
         target = LogTarget()
-        target.log_output_level = "summary"
 
         MainWindow._append_log(target, "[12:34:56] OCR 点击候选: ['领取']")
-        self.assertEqual(target.log_view.lines, [])
-        self.assertEqual(target.log_file.getvalue(), "")
-
+        MainWindow._append_log(target, "[12:34:56] ADB tap: (540, 960)")
         MainWindow._append_log(target, "[12:34:56] 任务结果 [1/1] demo: success")
+        MainWindow._flush_log_queue(target)
+
         self.assertEqual(
             target.log_view.lines,
-            ["[12:34:56] 任务结果 [1/1] demo: success"],
+            [
+                "[12:34:56] OCR 点击候选: ['领取']",
+                "[12:34:56] ADB tap: (540, 960)",
+                "[12:34:56] 任务结果 [1/1] demo: success",
+            ],
         )
         self.assertEqual(
             target.log_file.getvalue(),
+            "[12:34:56] OCR 点击候选: ['领取']\n"
+            "[12:34:56] ADB tap: (540, 960)\n"
             "[12:34:56] 任务结果 [1/1] demo: success\n",
         )
 
@@ -788,7 +850,7 @@ class MainWindowTests(unittest.TestCase):
                 self.text = text
 
         class SubtitleTarget:
-            settings = {"mumu_vmindex": 3}
+            settings = {"mumu_vm_index": 3}
 
             def __init__(self) -> None:
                 self.subtitle_label = FakeLabel()
@@ -801,24 +863,20 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._update_subtitle(target)
         self.assertEqual(target.subtitle_label.text, "实例 0  ·  1080×1920  ·  480 dpi")
 
-    def test_effective_screenshot_level_follows_max_files_and_save_level(self) -> None:
+    def test_effective_screenshots_enabled_follows_max_files(self) -> None:
         class Target:
             settings: dict = {}
 
-        Target.settings = {"screenshot_max_files": 0}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "none")
-        Target.settings = {"screenshot_max_files": -1}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
-        Target.settings = {"screenshot_max_files": 5}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
-        Target.settings = {"screenshot_max_files": -1, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "all")
-        Target.settings = {"screenshot_max_files": 5, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "all")
-        Target.settings = {"screenshot_max_files": 0, "screenshot_save_level": "all"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "none")
-        Target.settings = {"screenshot_max_files": -1, "screenshot_save_level": "invalid"}
-        self.assertEqual(MainWindow._effective_screenshot_level(Target()), "key")
+        Target.settings = {"max_screenshot_files": 0}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), False)
+        Target.settings = {"max_screenshot_files": -1}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+        Target.settings = {"max_screenshot_files": 5}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+        Target.settings = {"screenshot_save_level": "all"}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+        Target.settings = {}
+        self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
 
 
 if __name__ == "__main__":

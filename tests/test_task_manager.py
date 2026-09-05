@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication
-
-from free_app.action_editor_dialogs import ActionEditorDialog, CompoundEditorDialog
+from free_app.action_editor_dialogs import ActionEditorWidget
 from free_app.config import expand_action_for_run
 from free_app.message_box import QMessageBox
-from free_app.task_manager import TaskManagerWidget, UiTreeDumpWidget
+from free_app.task_manager import TaskManagerWidget
+from free_app.task_viewers import UiTreeDumpWidget
 from free_app.ui_automation import Bounds, UiNode, UiSnapshot
+from PySide6.QtWidgets import QApplication
 
 
 class TaskEditorTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class TaskEditorTests(unittest.TestCase):
         return task_path
 
     def _make_widget(self, base: Path) -> TaskManagerWidget:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         config_directory = base / "config"
         config_directory.mkdir(exist_ok=True)
         settings_path = config_directory / "settings.json"
@@ -60,9 +60,27 @@ class TaskEditorTests(unittest.TestCase):
     def test_reload_preserves_task_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            self._write_task_file(base, {"id": "task_a", "name": "A", "package": "a", "actions": [{"type": "wait", "seconds": 1}]})
-            self._write_task_file(base, {"id": "task_b", "name": "B", "package": "b", "actions": [{"type": "wait", "seconds": 1}]})
-            (base / "config" / "settings.json").write_text(json.dumps({"task_order": ["task_b", "task_a"]}), encoding="utf-8")
+            self._write_task_file(
+                base,
+                {
+                    "id": "task_a",
+                    "name": "A",
+                    "package": "a",
+                    "actions": [{"type": "wait", "seconds": 1}],
+                },
+            )
+            self._write_task_file(
+                base,
+                {
+                    "id": "task_b",
+                    "name": "B",
+                    "package": "b",
+                    "actions": [{"type": "wait", "seconds": 1}],
+                },
+            )
+            (base / "config" / "settings.json").write_text(
+                json.dumps({"task_order": ["task_b", "task_a"]}), encoding="utf-8"
+            )
             dialog = self._make_widget(base)
             try:
                 self.assertIn("task_b", dialog.task_list.item(0).text())
@@ -80,7 +98,9 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.task_package_edit.setText("pkg")
                 dialog._actions_buffer = [{"type": "wait", "seconds": 1}]
                 dialog._save_task()
-                settings = json.loads((base / "config" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads(
+                    (base / "config" / "settings.json").read_text(encoding="utf-8")
+                )
                 self.assertEqual(settings["task_order"], ["new_task"])
             finally:
                 dialog.deleteLater()
@@ -88,17 +108,32 @@ class TaskEditorTests(unittest.TestCase):
     def test_rename_task_replaces_order_and_recycles_old_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            old_path = self._write_task_file(base, {"id": "old", "name": "Old", "package": "pkg", "actions": [{"type": "wait", "seconds": 1}]})
-            (base / "config" / "settings.json").write_text(json.dumps({"task_order": ["before", "old", "after"]}), encoding="utf-8")
+            old_path = self._write_task_file(
+                base,
+                {
+                    "id": "old",
+                    "name": "Old",
+                    "package": "pkg",
+                    "actions": [{"type": "wait", "seconds": 1}],
+                },
+            )
+            (base / "config" / "settings.json").write_text(
+                json.dumps({"task_order": ["before", "old", "after"]}), encoding="utf-8"
+            )
             dialog = self._make_widget(base)
             try:
                 dialog.task_id_edit.setText("new")
                 dialog.task_name_edit.setText("New")
-                with patch("free_app.task_manager.send_to_recycle_bin", side_effect=lambda item: item.unlink()) as recycle:
+                with patch(
+                    "free_app.task_manager.remove_path",
+                    side_effect=lambda item, mode: item.unlink(),
+                ) as recycle:
                     dialog._save_task()
-                recycle.assert_called_once_with(old_path)
+                recycle.assert_called_once_with(old_path, "recycle")
                 self.assertFalse(old_path.exists())
-                settings = json.loads((base / "config" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads(
+                    (base / "config" / "settings.json").read_text(encoding="utf-8")
+                )
                 self.assertEqual(settings["task_order"], ["before", "new", "after"])
             finally:
                 dialog.deleteLater()
@@ -199,11 +234,12 @@ class TaskEditorTests(unittest.TestCase):
             )
             dialog = self._make_widget(base)
             try:
-                with patch("free_app.task_manager.confirm_dialog", return_value=True), patch(
-                    "free_app.task_manager.send_to_recycle_bin"
-                ) as recycle:
+                with (
+                    patch("free_app.task_manager.confirm_dialog", return_value=True),
+                    patch("free_app.task_manager.remove_path") as recycle,
+                ):
                     dialog._delete_task()
-                recycle.assert_called_once_with(task_path)
+                recycle.assert_called_once_with(task_path, "recycle")
                 self.assertNotIn("demo", dialog._tasks)
             finally:
                 dialog.deleteLater()
@@ -261,15 +297,18 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.deleteLater()
 
     def test_action_editor_offers_primitive_presets(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = ActionEditorDialog(None, "添加动作", {}, {})
+        QApplication.instance() or QApplication([])
+        dialog = ActionEditorWidget(None, {}, {})
         try:
-            types = [dialog.type_combo.itemData(i) for i in range(dialog.type_combo.count())]
+            types = [
+                dialog.type_combo.itemData(i) for i in range(dialog.type_combo.count())
+            ]
             for expected in (
                 "click",
                 "wait",
                 "back",
                 "detect",
+                "swipe_until",
                 "if",
                 "loop_until",
                 "compound",
@@ -279,12 +318,12 @@ class TaskEditorTests(unittest.TestCase):
             dialog.deleteLater()
 
     def test_action_editor_collects_click_text_form(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = ActionEditorDialog(None, "添加动作", {}, {})
+        QApplication.instance() or QApplication([])
+        dialog = ActionEditorWidget(None, {}, {})
         try:
             self.assertEqual(dialog.type_combo.currentData(), "click")
             self.assertEqual(dialog._field_widgets["locate"].currentData(), "ui")
-            dialog._field_widgets["text"].setText("签到")
+            dialog._field_widgets["texts"].setText("签到")
             dialog._field_widgets["timeout_seconds"].setText("20")
             data = dialog.collect()
             self.assertEqual(
@@ -293,7 +332,7 @@ class TaskEditorTests(unittest.TestCase):
                     "type": "click",
                     "locate": "ui",
                     "target": "text",
-                    "text": "签到",
+                    "texts": ["签到"],
                     "match_mode": "exact",
                     "timeout_seconds": 20,
                 },
@@ -302,8 +341,8 @@ class TaskEditorTests(unittest.TestCase):
             dialog.deleteLater()
 
     def test_action_editor_validates_required_coordinates(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = ActionEditorDialog(None, "添加动作", {"type": "click", "locate": "coordinate"}, {})
+        QApplication.instance() or QApplication([])
+        dialog = ActionEditorWidget(None, {"type": "click", "locate": "coordinate"}, {})
         try:
             with patch("free_app.action_editor_dialogs.QMessageBox.warning") as warning:
                 data = dialog.collect()
@@ -313,10 +352,9 @@ class TaskEditorTests(unittest.TestCase):
             dialog.deleteLater()
 
     def test_action_editor_loads_existing_coordinate_click(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = ActionEditorDialog(
+        QApplication.instance() or QApplication([])
+        dialog = ActionEditorWidget(
             None,
-            "编辑动作",
             {"type": "click", "locate": "coordinate", "x": 540, "y": 960},
             {},
         )
@@ -331,70 +369,29 @@ class TaskEditorTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_action_editor_compound_selects_name_and_params(self) -> None:
-        application = QApplication.instance() or QApplication([])
+    def test_action_editor_compound_selects_name(self) -> None:
+        QApplication.instance() or QApplication([])
         library = {
             "share_group": {
                 "name": "share_group",
                 "description": "分享到群",
-                "params": ["group_name"],
                 "steps": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
             }
         }
-        dialog = ActionEditorDialog(None, "添加动作", {}, library)
+        dialog = ActionEditorWidget(None, {}, library)
         try:
             index = dialog.type_combo.findData("compound")
             dialog.type_combo.setCurrentIndex(index)
             self.assertEqual(dialog._field_widgets["name"].currentData(), "share_group")
-            dialog._field_widgets["group_name"].setText("${qq_group_name}")
+            self.assertNotIn("group_name", dialog._field_widgets)
             data = dialog.collect()
             self.assertEqual(
                 data,
                 {
                     "type": "compound",
                     "name": "share_group",
-                    "params": {"group_name": "${qq_group_name}"},
                 },
             )
-        finally:
-            dialog.deleteLater()
-
-    def test_compound_editor_collects_form(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = CompoundEditorDialog(
-            None, "新建复合动作", {"name": "", "description": "", "params": [], "steps": []}
-        )
-        try:
-            dialog.name_edit.setText("my_share")
-            dialog._params.append("group_name")
-            dialog._refresh_params()
-            dialog._steps.append(
-                {"type": "click", "locate": "coordinate", "x": 1, "y": 2}
-            )
-            dialog._refresh_steps()
-            data = dialog.collect()
-            self.assertEqual(
-                data,
-                {
-                    "name": "my_share",
-                    "params": ["group_name"],
-                    "steps": [{"type": "click", "locate": "coordinate", "x": 1, "y": 2}],
-                },
-            )
-        finally:
-            dialog.deleteLater()
-
-    def test_compound_editor_rejects_empty_steps(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        dialog = CompoundEditorDialog(
-            None, "新建复合动作", {"name": "", "description": "", "params": [], "steps": []}
-        )
-        try:
-            dialog.name_edit.setText("my_share")
-            with patch("free_app.action_editor_dialogs.QMessageBox.warning") as warning:
-                data = dialog.collect()
-            warning.assert_called_once()
-            self.assertIsNone(data)
         finally:
             dialog.deleteLater()
 
@@ -413,8 +410,8 @@ class TaskEditorTests(unittest.TestCase):
             dialog = self._make_widget(base)
             try:
                 dialog._add_action()
-                self.assertEqual(dialog._embedded_editor_mode, "task_action")
-                self.assertEqual(dialog._embedded_editor_index, -1)
+                self.assertEqual(dialog._embedded.mode, "task_action")
+                self.assertEqual(dialog._embedded.index, -1)
                 self.assertIs(
                     dialog.editor_stack.currentWidget(),
                     dialog.embedded_action_editor_panel,
@@ -434,8 +431,8 @@ class TaskEditorTests(unittest.TestCase):
                     dialog.editor_stack.currentWidget(),
                     dialog.embedded_action_editor_panel,
                 )
-                self.assertEqual(dialog._embedded_editor_mode, "task_action")
-                self.assertEqual(dialog._embedded_editor_index, -1)
+                self.assertEqual(dialog._embedded.mode, "task_action")
+                self.assertEqual(dialog._embedded.index, -1)
             finally:
                 dialog.deleteLater()
 
@@ -452,8 +449,8 @@ class TaskEditorTests(unittest.TestCase):
                     dialog.editor_stack.currentWidget(),
                     dialog.embedded_action_editor_panel,
                 )
-                self.assertEqual(dialog._embedded_editor_mode, "compound_step")
-                self.assertEqual(dialog._embedded_editor_index, -1)
+                self.assertEqual(dialog._embedded.mode, "compound_step")
+                self.assertEqual(dialog._embedded.index, -1)
             finally:
                 dialog.deleteLater()
 
@@ -523,7 +520,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.actions_list.setCurrentRow(0)
                 dialog.task_list.setCurrentRow(1)
-                self.assertEqual(dialog._selected_task, "task_b")
+                self.assertEqual(dialog._task_state.selected, "task_b")
                 self.assertEqual(dialog.task_name_edit.text(), "B")
                 self.assertIs(
                     dialog.editor_stack.currentWidget(),
@@ -533,7 +530,9 @@ class TaskEditorTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_unified_operation_bar_switches_between_task_and_action_context(self) -> None:
+    def test_unified_operation_bar_switches_between_task_and_action_context(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._write_task_file(
@@ -547,14 +546,12 @@ class TaskEditorTests(unittest.TestCase):
             )
             dialog = self._make_widget(base)
             try:
-                self.assertEqual(dialog.operation_context_label.text(), "任务操作")
                 self.assertEqual(dialog.add_button.text(), "添加")
                 self.assertEqual(dialog.copy_button.text(), "复制")
                 self.assertEqual(dialog.delete_button.text(), "删除")
                 self.assertTrue(dialog.run_action_button.isHidden())
 
                 dialog.actions_list.setCurrentRow(0)
-                self.assertEqual(dialog.operation_context_label.text(), "动作操作")
                 self.assertFalse(dialog.run_action_button.isHidden())
                 self.assertTrue(dialog.copy_button.isEnabled())
                 self.assertTrue(dialog.delete_button.isEnabled())
@@ -624,7 +621,7 @@ class TaskEditorTests(unittest.TestCase):
                 ):
                     dialog.task_list.setCurrentRow(1)
                 self.assertEqual(dialog.task_list.currentRow(), 0)
-                self.assertEqual(dialog._selected_task, "task_a")
+                self.assertEqual(dialog._task_state.selected, "task_a")
                 self.assertEqual(dialog.task_name_edit.text(), "A changed")
             finally:
                 dialog.deleteLater()
@@ -649,7 +646,7 @@ class TaskEditorTests(unittest.TestCase):
                     initial={"type": "click"},
                     return_panel=dialog.editor_stack.widget(0),
                 )
-                dialog._embedded_editor_original = {"type": "click"}
+                dialog._embedded.original = {"type": "click"}
                 dialog.embedded_action_editor.load_data({"type": "wait", "seconds": 3})
                 with patch(
                     "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
@@ -683,7 +680,7 @@ class TaskEditorTests(unittest.TestCase):
                     initial={"type": "click"},
                     return_panel=dialog.editor_stack.widget(0),
                 )
-                dialog._embedded_editor_original = {"type": "click"}
+                dialog._embedded.original = {"type": "click"}
                 dialog.embedded_action_editor.load_data({"type": "wait", "seconds": 3})
                 with patch(
                     "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
@@ -766,8 +763,8 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.task_id_edit.setText("new")
                 with patch(
-                    "free_app.task_manager.send_to_recycle_bin",
-                    side_effect=lambda item: item.unlink(),
+                    "free_app.task_manager.remove_path",
+                    side_effect=lambda item, mode: item.unlink(),
                 ):
                     self.assertTrue(dialog._save_task())
                 saved = json.loads(
@@ -812,12 +809,14 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.left_tabs.setCurrentIndex(1)
                 dialog.compound_name_edit.setText("new")
                 with patch(
-                    "free_app.task_manager.send_to_recycle_bin",
-                    side_effect=lambda item: item.unlink(),
+                    "free_app.task_manager.remove_path",
+                    side_effect=lambda item, mode: item.unlink(),
                 ):
                     self.assertTrue(dialog._save_compound_from_editor())
                 saved_task = json.loads(
-                    (base / "config" / "tasks" / "demo.json").read_text(encoding="utf-8")
+                    (base / "config" / "tasks" / "demo.json").read_text(
+                        encoding="utf-8"
+                    )
                 )
                 self.assertEqual(saved_task["actions"][0]["name"], "new")
                 self.assertIn("new", dialog._compound_library)
@@ -844,7 +843,9 @@ class TaskEditorTests(unittest.TestCase):
                     dialog.editor_stack.currentWidget(),
                     dialog.embedded_json_viewer_panel,
                 )
-                self.assertIn('"id": "demo"', dialog.embedded_json_viewer.editor.toPlainText())
+                self.assertIn(
+                    '"id": "demo"', dialog.embedded_json_viewer.editor.toPlainText()
+                )
             finally:
                 dialog.deleteLater()
 
@@ -899,6 +900,81 @@ class TaskEditorTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
+    def test_deeply_nested_branch_save_reaches_task_actions(self) -> None:
+        """两级嵌套：if -> 分支步骤（if）-> 其分支都必须全部持久化。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._write_task_file(
+                base,
+                {
+                    "id": "demo",
+                    "name": "Demo",
+                    "package": "demo.package",
+                    "actions": [
+                        {
+                            "type": "if",
+                            "var": "state",
+                            "equals": "1",
+                            "then": [
+                                {
+                                    "type": "if",
+                                    "var": "inner",
+                                    "equals": "2",
+                                    "then": [],
+                                    "else": [],
+                                }
+                            ],
+                            "else": [],
+                        }
+                    ],
+                },
+            )
+            dialog = self._make_widget(base)
+            try:
+                # 顶层：编辑 if 动作
+                dialog.actions_list.setCurrentRow(0)
+                dialog._edit_action()
+                # 第 1 层分支：编辑 then（内含 if-X）
+                inner_if = {
+                    "type": "if",
+                    "var": "inner",
+                    "equals": "2",
+                    "then": [],
+                    "else": [],
+                }
+                dialog._open_branch_steps_editor("then", [inner_if])
+                dialog._edit_branch_step(0)
+                self.assertEqual(dialog._embedded.mode, "branch_step")
+                # 第 2 层分支：编辑 if-X 的 then
+                dialog._open_branch_steps_editor("then", [])
+                dialog._add_branch_step()
+                dialog._on_embedded_editor_saved({"type": "wait", "seconds": 7})
+                # 第 2 层保存 → 恢复第 1 层的编辑上下文
+                dialog._on_branch_steps_saved(
+                    dialog.embedded_branch_steps_editor.get_steps()
+                )
+                self.assertEqual(
+                    dialog._embedded.branch_stack[0]["steps"][0]["then"], []
+                )
+                self.assertEqual(dialog._embedded.mode, "branch_step")
+                # 提交剩余两层：第 1 层分支 → 顶层任务动作
+                self.assertTrue(dialog._commit_embedded_editors())
+                outer_if = dialog._actions_buffer[0]
+                self.assertEqual(
+                    outer_if["then"],
+                    [
+                        {
+                            "type": "if",
+                            "var": "inner",
+                            "equals": "2",
+                            "then": [{"type": "wait", "seconds": 7}],
+                            "else": [],
+                        }
+                    ],
+                )
+            finally:
+                dialog.deleteLater()
+
     def test_branch_step_add_uses_embedded_action_editor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -929,8 +1005,8 @@ class TaskEditorTests(unittest.TestCase):
                     dialog.editor_stack.currentWidget(),
                     dialog.embedded_action_editor_panel,
                 )
-                self.assertEqual(dialog._embedded_editor_mode, "branch_step")
-                self.assertEqual(dialog._embedded_editor_index, -1)
+                self.assertEqual(dialog._embedded.mode, "branch_step")
+                self.assertEqual(dialog._embedded.index, -1)
                 dialog._on_embedded_editor_saved(
                     {"type": "click", "locate": "coordinate", "x": 5, "y": 6}
                 )
@@ -1003,10 +1079,13 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.actions_list.setCurrentRow(0)
                 dialog._edit_action()
                 dialog.embedded_action_editor._field_widgets["seconds"].setText("abc")
-                with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
-                    return_value="save",
-                ), patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with (
+                    patch(
+                        "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                        return_value="save",
+                    ),
+                    patch("free_app.task_manager.QMessageBox.warning") as warning,
+                ):
                     self.assertTrue(dialog.go_back())
                 warning.assert_called_once()
                 self.assertIs(
@@ -1061,7 +1140,9 @@ class TaskEditorTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_go_back_from_json_opened_inside_action_editor_returns_to_editor(self) -> None:
+    def test_go_back_from_json_opened_inside_action_editor_returns_to_editor(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self._write_task_file(
@@ -1124,22 +1205,35 @@ class TaskEditorTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-
-
     def test_new_compound_rejects_duplicate_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             action_directory = base / "config" / "actions"
             action_directory.mkdir(parents=True)
             action_path = action_directory / "existing.json"
-            original = {"name": "existing", "description": "old", "params": [], "steps": [{"type": "wait", "seconds": 1}]}
+            original = {
+                "name": "existing",
+                "description": "old",
+                "params": [],
+                "steps": [{"type": "wait", "seconds": 1}],
+            }
             action_path.write_text(json.dumps(original), encoding="utf-8")
             dialog = self._make_widget(base)
             try:
                 with patch("free_app.task_manager.QMessageBox.warning") as warning:
-                    dialog._save_compound({"name": "existing", "description": "new", "params": [], "steps": [{"type": "wait", "seconds": 2}]}, previous_name="")
+                    dialog._save_compound(
+                        {
+                            "name": "existing",
+                            "description": "new",
+                            "params": [],
+                            "steps": [{"type": "wait", "seconds": 2}],
+                        },
+                        previous_name="",
+                    )
                 warning.assert_called_once()
-                self.assertEqual(json.loads(action_path.read_text(encoding="utf-8")), original)
+                self.assertEqual(
+                    json.loads(action_path.read_text(encoding="utf-8")), original
+                )
             finally:
                 dialog.deleteLater()
 
@@ -1149,15 +1243,28 @@ class TaskEditorTests(unittest.TestCase):
             action_directory = base / "config" / "actions"
             action_directory.mkdir(parents=True)
             old_path = action_directory / "old.json"
-            old_path.write_text(json.dumps({"name": "old", "description": "", "params": [], "steps": [{"type": "wait", "seconds": 1}]}), encoding="utf-8")
+            old_path.write_text(
+                json.dumps(
+                    {
+                        "name": "old",
+                        "description": "",
+                        "params": [],
+                        "steps": [{"type": "wait", "seconds": 1}],
+                    }
+                ),
+                encoding="utf-8",
+            )
             dialog = self._make_widget(base)
             try:
                 dialog.compound_list.setCurrentRow(0)
                 self.assertEqual(dialog.compound_name_edit.text(), "old")
                 dialog.compound_name_edit.setText("new")
-                with patch("free_app.task_manager.send_to_recycle_bin", side_effect=lambda item: item.unlink()) as recycle:
+                with patch(
+                    "free_app.task_manager.remove_path",
+                    side_effect=lambda item, mode: item.unlink(),
+                ) as recycle:
                     dialog._save_compound_from_editor()
-                recycle.assert_called_once_with(old_path)
+                recycle.assert_called_once_with(old_path, "recycle")
                 self.assertFalse(old_path.exists())
                 self.assertNotIn("old", dialog._compound_library)
                 self.assertIn("new", dialog._compound_library)
@@ -1175,7 +1282,10 @@ class TaskEditorTests(unittest.TestCase):
                         "name": "share",
                         "description": "分享到群",
                         "params": ["group_name"],
-                        "steps": [{"type": "wait", "seconds": 1}, {"type": "back", "times": 1}],
+                        "steps": [
+                            {"type": "wait", "seconds": 1},
+                            {"type": "back", "times": 1},
+                        ],
                     },
                     ensure_ascii=False,
                 ),
@@ -1184,7 +1294,6 @@ class TaskEditorTests(unittest.TestCase):
             dialog = self._make_widget(base)
             try:
                 self.assertEqual(dialog.compound_name_edit.text(), "share")
-                self.assertEqual(dialog._params_buffer, ["group_name"])
                 self.assertEqual(len(dialog._steps_buffer), 2)
                 self.assertEqual(dialog.compound_steps_list.count(), 2)
             finally:
@@ -1211,7 +1320,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
 
     @staticmethod
     def _make_widget(base: Path) -> TaskManagerWidget:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         config_directory = base / "config"
         config_directory.mkdir(exist_ok=True)
         settings_path = config_directory / "settings.json"
@@ -1223,7 +1332,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
         return TaskManagerWidget(settings_path, base_directory=base)
 
     def test_try_click_button_emits_selected_node_center(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         widget = UiTreeDumpWidget()
         try:
             widget.load_snapshot(self._snapshot())
@@ -1239,7 +1348,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
             widget.deleteLater()
 
     def test_search_filter_supports_fuzzy_and_exact_text_modes(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         snapshot = UiSnapshot(
             [
                 UiNode(
@@ -1278,20 +1387,24 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
         try:
             widget.load_snapshot(snapshot)
             widget.search_edit.setText("领取")
+            widget._apply_filter()
             visible = [not item.isHidden() for item in widget._all_items]
             self.assertEqual(visible, [True, True, False])
 
             exact_index = widget.search_mode_combo.findData("exact")
             widget.search_mode_combo.setCurrentIndex(exact_index)
+            widget._apply_filter()
             visible = [not item.isHidden() for item in widget._all_items]
             self.assertEqual(visible, [False, True, False])
 
             widget.search_edit.setText("领取%")
+            widget._apply_filter()
             visible = [not item.isHidden() for item in widget._all_items]
             self.assertEqual(visible, [False, False, False])
 
             fuzzy_index = widget.search_mode_combo.findData("fuzzy")
             widget.search_mode_combo.setCurrentIndex(fuzzy_index)
+            widget._apply_filter()
             visible = [not item.isHidden() for item in widget._all_items]
             self.assertEqual(visible, [True, True, False])
         finally:
@@ -1310,6 +1423,8 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
 
                 manager._ui_tree_adb = FakeAdb()
                 manager._on_embedded_ui_tree_try_click_requested(200, 300, "领取")
+                manager.wait_background_tasks()
+                QApplication.processEvents()
                 self.assertEqual(taps, [(200, 300)])
             finally:
                 manager.deleteLater()
@@ -1330,6 +1445,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
             base = Path(directory)
             manager = self._make_widget(base)
             try:
+
                 class FakeAdb:
                     def current_package(self) -> str:
                         return "tv.danmaku.bili"
@@ -1342,6 +1458,8 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
                     return_value=FakeAdb(),
                 ):
                     manager._on_copy_package_clicked()
+                    manager.wait_background_tasks()
+                    QApplication.processEvents()
                 self.assertEqual(QApplication.clipboard().text(), "tv.danmaku.bili")
                 self.assertEqual(feedback, ["tv.danmaku.bili"])
             finally:
@@ -1352,16 +1470,22 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
             base = Path(directory)
             manager = self._make_widget(base)
             try:
+
                 class FakeAdb:
                     def current_package(self) -> str | None:
                         return None
 
-                with patch.object(
-                    TaskManagerWidget,
-                    "_connect_to_mumu",
-                    return_value=FakeAdb(),
-                ), patch.object(manager, "_show_timed_warning") as warning:
+                with (
+                    patch.object(
+                        TaskManagerWidget,
+                        "_connect_to_mumu",
+                        return_value=FakeAdb(),
+                    ),
+                    patch.object(manager, "_show_timed_warning") as warning,
+                ):
                     manager._on_copy_package_clicked()
+                    manager.wait_background_tasks()
+                    QApplication.processEvents()
                 warning.assert_called_once_with(
                     "获取包名失败",
                     "未识别到前台应用包名。",
@@ -1370,7 +1494,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
                 manager.deleteLater()
 
     def test_insert_click_uses_selected_text_mode(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         widget = UiTreeDumpWidget()
         try:
             widget.load_snapshot(self._snapshot())
@@ -1388,7 +1512,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
                         "type": "click",
                         "locate": "ui",
                         "target": "text",
-                        "text": "\u9886\u53d6",
+                        "texts": ["\u9886\u53d6"],
                         "match_mode": "exact",
                         "timeout_seconds": 15,
                     }
@@ -1401,7 +1525,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
             widget.deleteLater()
 
     def test_insert_click_uses_selected_resource_id_mode(self) -> None:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         widget = UiTreeDumpWidget()
         try:
             widget.load_snapshot(self._snapshot())
@@ -1432,7 +1556,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
 
 
 class TaskValidationLogicTests(unittest.TestCase):
-    """Direct tests for the pure logic methods on TaskManagerWidget."""
+    """直接测试 TaskManagerWidget 上的纯逻辑方法。"""
 
     @staticmethod
     def _write_task_file(base: Path, data: dict) -> Path:
@@ -1444,7 +1568,7 @@ class TaskValidationLogicTests(unittest.TestCase):
 
     @staticmethod
     def _make_widget(base: Path) -> TaskManagerWidget:
-        application = QApplication.instance() or QApplication([])
+        QApplication.instance() or QApplication([])
         config_directory = base / "config"
         config_directory.mkdir(parents=True, exist_ok=True)
         settings_path = config_directory / "settings.json"
@@ -1465,7 +1589,7 @@ class TaskValidationLogicTests(unittest.TestCase):
                     "steps": [
                         {"type": "compound", "name": "keep"},
                         [{"type": "compound", "name": "old"}],
-                        {"type": "click", "text": "x"},
+                        {"type": "click", "texts": ["x"]},
                     ],
                 }
                 changed = TaskManagerWidget._replace_compound_reference(
@@ -1479,11 +1603,17 @@ class TaskValidationLogicTests(unittest.TestCase):
             finally:
                 widget.deleteLater()
 
-    def test_replace_compound_reference_returns_false_when_nothing_changes(self) -> None:
+    def test_replace_compound_reference_returns_false_when_nothing_changes(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             widget = self._make_widget(Path(directory))
             try:
-                value = {"type": "compound", "name": "other", "steps": [{"type": "wait"}]}
+                value = {
+                    "type": "compound",
+                    "name": "other",
+                    "steps": [{"type": "wait"}],
+                }
                 self.assertFalse(
                     TaskManagerWidget._replace_compound_reference(value, "old", "new")
                 )
@@ -1496,7 +1626,7 @@ class TaskValidationLogicTests(unittest.TestCase):
             base = Path(directory)
             action_directory = base / "config" / "actions"
             action_directory.mkdir(parents=True, exist_ok=True)
-            # The referenced compound must exist so the task loads successfully.
+            # 所引用的复合动作必须存在，任务才能加载成功。
             (action_directory / "old.json").write_text(
                 json.dumps(
                     {
@@ -1529,7 +1659,7 @@ class TaskValidationLogicTests(unittest.TestCase):
             try:
                 updates = widget._compound_reference_updates("old", "new")
                 self.assertEqual([item[0] for item in updates], ["has_old"])
-                task_id, _original, candidate, task_path = updates[0]
+                _task_id, _original, candidate, task_path = updates[0]
                 self.assertEqual(candidate["actions"][0]["name"], "new")
                 self.assertEqual(task_path.name, "has_old.json")
             finally:
@@ -1584,7 +1714,7 @@ class TaskValidationLogicTests(unittest.TestCase):
     def test_task_path_for_id_finds_file_by_id_attribute(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            # File name differs from the id; lookup must scan file contents.
+            # 文件名与标识不同；查找时必须扫描文件内容。
             tasks_directory = base / "config" / "tasks"
             tasks_directory.mkdir(parents=True, exist_ok=True)
             (tasks_directory / "renamed.json").write_text(

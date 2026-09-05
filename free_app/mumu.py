@@ -4,15 +4,20 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event
-from typing import Any, Callable
+from typing import Any
 
 from .adb import AdbClient, AdbError, Device
+from .constants import DEFAULT_MUMU_DIRECTORY
 from .helpers import LogCallback, noop_log, number_setting
 
+DEFAULT_MUMU_CLI = DEFAULT_MUMU_DIRECTORY / "nx_main" / "mumu-cli.exe"
 
-DEFAULT_MUMU_CLI = Path(r"D:\APP\MuMu Player 12\nx_main\mumu-cli.exe")
+# 安装目录内 adb.exe / mumu-cli.exe 的常见布局，按优先级排列（"" 表示根目录）。
+_ADB_LAYOUT = ("nx_main", "shell", "")
+_CLI_LAYOUT = ("nx_main", "")
 
 
 class MuMuError(RuntimeError):
@@ -20,25 +25,60 @@ class MuMuError(RuntimeError):
 
 
 class MuMuStopRequested(RuntimeError):
-    """Raised when the user stops while MuMu is still preparing."""
+    """MuMu 仍在准备时用户请求停止。"""
 
-    pass
+
+def _exe_candidates(folder: Path, name: str, subdirs: tuple[str, ...]) -> list[Path]:
+    """安装目录下可执行文件的候选路径：各子目录布局加根目录。"""
+
+    return [folder / subdir / name if subdir else folder / name for subdir in subdirs]
+
+
+def adb_candidates(folder: Path) -> list[Path]:
+    """adb.exe 在 MuMu 安装目录下的候选路径，按优先级排列。"""
+
+    return _exe_candidates(folder, "adb.exe", _ADB_LAYOUT)
+
+
+def cli_candidates(folder: Path) -> list[Path]:
+    """mumu-cli.exe 在 MuMu 安装目录下的候选路径，按优先级排列。"""
+
+    return _exe_candidates(folder, "mumu-cli.exe", _CLI_LAYOUT)
+
+
+def resolve_adb_path(settings: dict[str, Any]) -> Path:
+    """按设置推导 adb.exe：已配置路径 → 配置的安装目录布局 → 默认安装位置。
+
+    候选都不存在时返回第一个候选，让后续 ADB 调用的报错暴露真实问题。
+    """
+
+    candidates: list[Path] = []
+    configured = settings.get("adb_path")
+    if isinstance(configured, str) and configured.strip():
+        candidates.append(Path(configured.strip()))
+    folder_value = settings.get("mumu_directory")
+    if isinstance(folder_value, str) and folder_value.strip():
+        candidates.extend(adb_candidates(Path(folder_value.strip())))
+    candidates.extend(adb_candidates(DEFAULT_MUMU_DIRECTORY))
+    return next((path for path in candidates if path.exists()), candidates[0])
 
 
 def mumu_cli_path(settings: dict[str, Any]) -> Path:
-    """Resolve mumu-cli.exe, preferring configured paths and install folder."""
+    """按设置推导 mumu-cli.exe：已配置路径 → 配置的安装目录布局 → 默认安装位置。"""
 
     cli_value = settings.get("mumu_cli_path")
     if isinstance(cli_value, str) and cli_value.strip():
         return Path(cli_value.strip())
     folder_value = settings.get("mumu_directory")
     if isinstance(folder_value, str) and folder_value.strip():
-        folder = Path(folder_value.strip())
-        candidates = [
-            folder / "nx_main" / "mumu-cli.exe",
-            folder / "mumu-cli.exe",
-        ]
-        existing = next((path for path in candidates if path.exists()), None)
+        existing = next(
+            (
+                path
+                for path in cli_candidates(Path(folder_value.strip()))
+                if path.exists()
+            ),
+            None,
+        )
         if existing:
             return existing
     return DEFAULT_MUMU_CLI
@@ -49,12 +89,12 @@ class MuMuController:
         self.executable = Path(executable)
         self.command_timeout = command_timeout
 
-    def _run(self, arguments: list[str]) -> str:
+    def _run(self, arguments: list[str], timeout: float | None = None) -> str:
         if not self.executable.exists():
             raise MuMuError(f"找不到 MuMu CLI: {self.executable}")
         command = [str(self.executable), *arguments]
         child_environment = os.environ.copy()
-        # Keep PySide/offscreen Qt variables from changing MuMu CLI startup.
+        # 防止 PySide/离屏 Qt 变量改变 MuMu 命令行启动行为。
         for variable in ("QT_QPA_PLATFORM", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"):
             child_environment.pop(variable, None)
         try:
@@ -64,7 +104,7 @@ class MuMuController:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.command_timeout,
+                timeout=self.command_timeout if timeout is None else timeout,
                 check=False,
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 env=child_environment,
@@ -88,9 +128,13 @@ class MuMuController:
         return data
 
     def list_instances(self) -> dict[int, str]:
-        """Return {vmindex: instance_name} for every configured MuMu player."""
+        """返回所有已配置 MuMu 实例的 ``{vmindex: instance_name}`` 映射。"""
 
-        output = self._run(["info", "--vmindex", "all"])
+        # 列表查询用短超时（设置页每次打开都会调用），CLI 卡住时
+        # 最多阻塞 3 秒而不是整段命令超时（10 秒）。
+        output = self._run(
+            ["info", "--vmindex", "all"], timeout=min(3.0, self.command_timeout)
+        )
         try:
             data = json.loads(output)
         except json.JSONDecodeError as exc:
@@ -113,22 +157,22 @@ class MuMuController:
         return self._run(["control", "--vmindex", str(vmindex), "shutdown"])
 
     def close_main(self) -> str:
-        """Gracefully close the MuMu Player desktop application."""
+        """优雅地关闭 MuMu 桌面程序。"""
 
         return self._run(["main", "close"])
 
 
 def _mumu_controller(settings: dict[str, Any]) -> MuMuController:
-    """Build the CLI controller from settings with a normalized command timeout."""
+    """按设置构建 CLI 控制器，并规范化命令超时时间。"""
 
     command_timeout = number_setting(
-        settings, "mumu_command_timeout_seconds", 30.0, minimum=1.0
+        settings, "mumu_command_timeout_seconds", 10.0, minimum=1.0
     )
     return MuMuController(mumu_cli_path(settings), command_timeout=command_timeout)
 
 
 def mumu_adb_address(instance_info: dict[str, Any]) -> str | None:
-    """Return the local ADB forwarding address reported by MuMu."""
+    """返回 MuMu 上报的本地 ADB 转发地址。"""
 
     adb_port = instance_info.get("adb_port")
     adb_host = instance_info.get("adb_host_ip", "127.0.0.1")
@@ -138,22 +182,20 @@ def mumu_adb_address(instance_info: dict[str, Any]) -> str | None:
 
 
 def mumu_adb_address_from_settings(settings: dict[str, Any]) -> str | None:
-    """Resolve the running MuMu instance's forwarded ADB address from settings.
+    """按设置解析运行中 MuMu 实例的 ADB 转发地址。
 
-    Returns ``None`` when the instance does not report an ADB address.
+    实例未上报 ADB 地址时返回 ``None``。
     """
 
     controller = _mumu_controller(settings)
-    instance_info = controller.instance_info(str(settings.get("mumu_vmindex", "0")))
+    instance_info = controller.instance_info(str(settings.get("mumu_vm_index", 0)))
     return mumu_adb_address(instance_info)
 
 
 def connect_to_mumu(settings: dict[str, Any]) -> AdbClient:
-    """Build an AdbClient from settings, connect it to the running MuMu
-    instance's ADB port, and select that device.
+    """按设置构建 AdbClient，连接运行中 MuMu 实例的 ADB 端口并选中该设备。
 
-    Raises :class:`MuMuError` when the ADB path is not configured or the
-    instance does not report an ADB address.
+    ADB 路径未配置或实例未上报 ADB 地址时抛出 :class:`MuMuError`。
     """
 
     adb_path = settings.get("adb_path")
@@ -162,11 +204,11 @@ def connect_to_mumu(settings: dict[str, Any]) -> AdbClient:
     adb = AdbClient(
         Path(adb_path),
         command_timeout=number_setting(
-            settings, "command_timeout_seconds", 15.0, minimum=1.0
+            settings, "command_timeout_seconds", 10.0, minimum=1.0
         ),
     )
     controller = _mumu_controller(settings)
-    instance_info = controller.instance_info(str(settings.get("mumu_vmindex", "0")))
+    instance_info = controller.instance_info(str(settings.get("mumu_vm_index", 0)))
     address = mumu_adb_address(instance_info)
     if not address:
         raise MuMuError("MuMu 未返回动态 ADB 地址")
@@ -181,25 +223,24 @@ def shutdown_mumu(
     *,
     sleep_function: Callable[[float], None] = time.sleep,
 ) -> bool:
-    """Close the configured MuMu instance and verify that it actually stops.
+    """关闭配置的 MuMu 实例，并确认它真正停止。
 
-    MuMu CLI returns as soon as the shutdown request is accepted.  Treating
-    that return as completion can leave the emulator running, so poll the
-    instance state before reporting success.
+    MuMu CLI 在关闭请求被接受后立即返回。若把这次返回当作关闭完成，
+    模拟器可能仍在运行，因此要先轮询实例状态再报告成功。
     """
 
     log = noop_log(log_callback)
-    if not bool(settings.get("close_mumu_after_run", False)):
+    if not settings.get("close_mumu_after_run", False):
         return False
 
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", 0))
     try:
         controller = _mumu_controller(settings)
         command_timeout = number_setting(
-            settings, "mumu_command_timeout_seconds", 30.0, minimum=1.0
+            settings, "mumu_command_timeout_seconds", 10.0, minimum=1.0
         )
         poll_interval = number_setting(
-            settings, "mumu_poll_interval_seconds", 1.0, minimum=0.1
+            settings, "mumu_poll_interval_seconds", 3.0, minimum=0.1
         )
         log(f"任务结束，关闭 MuMu 实例 {vmindex}")
         controller.shutdown(vmindex)
@@ -248,14 +289,14 @@ def shutdown_mumu_app(
     settings: dict[str, Any],
     log_callback: LogCallback | None = None,
 ) -> bool:
-    """Close the MuMu Player desktop program when the new switch is enabled.
+    """在启用 ``close_mumu_app_after_run`` 时关闭 MuMu 桌面程序。
 
-    This is separate from :func:`shutdown_mumu`: that function only shuts down
-    the configured emulator instance, while this one exits the desktop app.
+    与 :func:`shutdown_mumu` 相互独立：后者只关闭配置的模拟器实例，
+    本函数则退出桌面程序。
     """
 
     log = noop_log(log_callback)
-    if not bool(settings.get("close_mumu_app_after_run", False)):
+    if not settings.get("close_mumu_app_after_run", False):
         return False
 
     try:
@@ -281,13 +322,13 @@ def prepare_device(
         if stop_event is not None and stop_event.is_set():
             raise MuMuStopRequested("用户请求停止设备准备")
 
-    auto_start = bool(settings.get("auto_start_mumu", False))
+    auto_start = settings.get("auto_start_mumu", True)
     check_stop()
 
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", 0))
     controller = _mumu_controller(settings)
-    timeout = number_setting(settings, "mumu_start_timeout_seconds", 90.0, minimum=0.0)
-    poll_interval = number_setting(settings, "mumu_poll_interval_seconds", 1.0)
+    timeout = number_setting(settings, "mumu_start_timeout_seconds", 30.0, minimum=0.0)
+    poll_interval = number_setting(settings, "mumu_poll_interval_seconds", 3.0)
     log(f"准备 MuMu 实例: vmindex={vmindex}, timeout={timeout:g}s")
 
     instance_info: dict[str, Any] = {}
@@ -378,7 +419,9 @@ def prepare_device(
             last_state = "MuMu 未返回 ADB 地址"
             log(last_state)
         if devices:
-            last_state = ", ".join(f"{device.serial}: {device.state}" for device in devices)
+            last_state = ", ".join(
+                f"{device.serial}: {device.state}" for device in devices
+            )
         if stop_event is not None:
             stop_event.wait(max(0, poll_interval))
         else:
@@ -395,10 +438,10 @@ def connect_to_running_mumu(
     settings: dict[str, Any],
     log_callback: LogCallback | None = None,
 ) -> Device:
-    """Connect ADB to an already-running MuMu instance without startup logic."""
+    """把 ADB 连接到已在运行的 MuMu 实例，不包含启动流程。"""
 
     log = noop_log(log_callback)
-    vmindex = str(settings.get("mumu_vmindex", "0"))
+    vmindex = str(settings.get("mumu_vm_index", 0))
     controller = _mumu_controller(settings)
     instance_info = controller.instance_info(vmindex)
     address = mumu_adb_address(instance_info)

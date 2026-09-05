@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import Any, Literal, Sequence, overload
+from typing import Any, Literal, overload
 
 from .helpers import LogCallback
 
@@ -54,8 +55,8 @@ class AdbClient:
         try:
             self.log_callback(message)
         except Exception:
-            # Logging must never turn a successful device operation into a
-            # failed automation action.
+            # 日志记录绝不能把一次成功的设备操作变成
+            # 失败的自动化动作。
             return
 
     @overload
@@ -92,17 +93,16 @@ class AdbClient:
         run_options: dict[str, Any] = {
             "capture_output": True,
             "timeout": effective_timeout,
-            "check": False,
             "creationflags": subprocess.CREATE_NO_WINDOW,
         }
         if not binary:
             run_options.update(text=True, encoding="utf-8", errors="replace")
         try:
-            completed = subprocess.run(command, **run_options)
+            completed = subprocess.run(command, check=False, **run_options)
         except subprocess.TimeoutExpired as exc:
             if binary:
-                # Binary callers (e.g. screenshot) own their command-specific
-                # timeout messaging, so surface the raw exception for re-wrapping.
+                # 二进制调用方（如截图）自行处理命令专属的
+                # 超时提示，因此这里直接抛出原始异常交由上层重新包装。
                 raise
             elapsed = time.monotonic() - started
             self._trace(
@@ -152,10 +152,16 @@ class AdbClient:
     def screen_info(self) -> ScreenInfo:
         size_output = self.shell("wm", "size")
         density_output = self.shell("wm", "density")
-        size_matches = re.findall(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", size_output)
-        density_matches = re.findall(r"(?:Physical|Override) density:\s*(\d+)", density_output)
+        size_matches = re.findall(
+            r"(?:Physical|Override) size:\s*(\d+)x(\d+)", size_output
+        )
+        density_matches = re.findall(
+            r"(?:Physical|Override) density:\s*(\d+)", density_output
+        )
         if not size_matches or not density_matches:
-            raise AdbError(f"无法解析模拟器规格: size={size_output!r}, density={density_output!r}")
+            raise AdbError(
+                f"无法解析模拟器规格: size={size_output!r}, density={density_output!r}"
+            )
         width, height = map(int, size_matches[-1])
         density = int(density_matches[-1])
         return ScreenInfo(width, height, density)
@@ -166,29 +172,36 @@ class AdbClient:
         preferred = preferred_serial or self.serial
         if not preferred:
             raise AdbError("未指定目标 ADB serial，禁止自动选择任意 ADB 设备")
-        selected = next((device for device in ready if device.serial == preferred), None)
+        selected = next(
+            (device for device in ready if device.serial == preferred), None
+        )
         if selected:
             self.serial = selected.serial
             return selected
-        matching = next((device for device in devices if device.serial == preferred), None)
+        matching = next(
+            (device for device in devices if device.serial == preferred), None
+        )
         if matching:
             raise AdbError(f"设备 {preferred} 当前状态为 {matching.state}")
-        states = ", ".join(f"{device.serial}: {device.state}" for device in devices) or "没有设备"
+        states = (
+            ", ".join(f"{device.serial}: {device.state}" for device in devices)
+            or "没有设备"
+        )
         raise AdbError(f"找不到目标 ADB 设备 {preferred}（当前设备: {states}）")
 
     def shell(self, *arguments: str, check: bool = True) -> str:
         return self._run(self._device_args() + ["shell", *arguments], check=check)
 
     def connect(self, address: str) -> str:
-        """Connect the local ADB client to a MuMu instance's forwarded port."""
+        """将本地 ADB 客户端连接到 MuMu 实例的转发端口。"""
 
         return self._run(["connect", address])
 
     def reconnect(self) -> bool:
-        """Try to bring the selected network ADB device back online.
+        """尝试让选中的网络 ADB 设备重新上线。
 
-        Local emulator names such as ``emulator-5556`` are intentionally
-        skipped because they cannot be re-added through ``adb connect``.
+        ``emulator-5556`` 这类本地模拟器名称会被有意跳过，
+        因为它们无法通过 ``adb connect`` 重新添加。
         """
 
         if not self.serial or ":" not in self.serial:
@@ -207,8 +220,8 @@ class AdbClient:
         self.shell("am", "force-stop", package)
 
     def launch(self, package: str) -> None:
-        # Explicitly target the launcher activity. Plain "monkey -p <pkg> 1"
-        # only sends random events and may return without opening the app.
+        # 显式指定启动器 Activity。裸的 "monkey -p <pkg> 1"
+        # 只会发送随机事件，可能不打开应用就直接返回。
         self.shell(
             "monkey",
             "-p",
@@ -225,7 +238,9 @@ class AdbClient:
         self.shell("input", "tap", str(x), str(y))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None:
-        self.shell("input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms))
+        self.shell(
+            "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)
+        )
 
     def screenshot(self) -> bytes:
         if not self.serial:
@@ -262,47 +277,60 @@ class AdbClient:
 
     def dump_ui(self) -> str:
         remote_path = "/sdcard/free_window_dump.xml"
-        # MuMu can write a valid dump and still exit uiautomator with code 139.
-        # The XML read is the reliable success signal, not the dump process code.
-        self.shell("rm", "-f", remote_path, check=False)
-        dump_error: AdbError | None = None
-        try:
-            self.shell("uiautomator", "dump", remote_path)
-        except AdbError as exc:
-            dump_error = exc
-        try:
-            xml = self.exec_out("cat", remote_path)
-        except AdbError:
-            if dump_error is not None:
-                raise AdbError(f"UI dump 命令失败: {dump_error}") from dump_error
-            raise
+        # MuMu 可能已写出有效的界面 dump，但 uiautomator 仍以退出码 139 结束，
+        # 因此吞掉 dump 自身的输出与退出码，以 cat 的实际读取结果为准。
+        # 单条 sh -c 把原来的 3 个子进程（rm + dump + cat）压成 1 个——
+        # 这是 detect/click 轮询的最热路径。
+        script = (
+            f"rm -f {remote_path}; "
+            f"uiautomator dump {remote_path} >/dev/null 2>&1; "
+            f"cat {remote_path}"
+        )
+        xml = self.shell("sh", "-c", script, check=False)
         if "<hierarchy" not in xml:
-            detail = f": {dump_error}" if dump_error is not None else ""
-            raise AdbError(f"UI dump 没有返回有效的 hierarchy XML{detail}")
+            raise AdbError("UI dump 没有返回有效的 hierarchy XML")
         return xml
 
     def current_package(self) -> str | None:
-        outputs = (
-            self.shell("dumpsys", "window", "windows", check=False),
-            self.shell("dumpsys", "activity", "activities", check=False),
+        """返回前台应用包名，首次命中即短路返回。
+
+        窗口 dump 通常已能给出焦点应用；只有第一条命令查不到时才读取
+        activity dump，让引擎每次动作的前台检查保持轻量。
+        """
+
+        for arguments in (
+            ("dumpsys", "window", "windows"),
+            ("dumpsys", "activity", "activities"),
+        ):
+            output = self.shell(*arguments, check=False)
+            package = self._package_from_dumpsys(output)
+            if package is not None:
+                return package
+        return None
+
+    @staticmethod
+    def _package_from_dumpsys(output: str) -> str | None:
+        markers = (
+            "mCurrentFocus",
+            "mFocusedApp",
+            "topResumedActivity",
+            "ResumedActivity",
         )
-        markers = ("mCurrentFocus", "mFocusedApp", "topResumedActivity", "ResumedActivity")
-        for output in outputs:
-            for line in output.splitlines():
-                if not any(marker in line for marker in markers):
+        for line in output.splitlines():
+            if not any(marker in line for marker in markers):
+                continue
+            parts = line.replace("}", " ").split()
+            for part in parts:
+                if "/" not in part:
                     continue
-                parts = line.replace("}", " ").split()
-                for part in parts:
-                    if "/" not in part:
-                        continue
-                    package = part.split("/", 1)[0].strip("{")
-                    if (
-                        package
-                        and "." in package
-                        and all(
-                            character.isalnum() or character in "_.$"
-                            for character in package
-                        )
-                    ):
-                        return package
+                package = part.split("/", 1)[0].strip("{")
+                if (
+                    package
+                    and "." in package
+                    and all(
+                        character.isalnum() or character in "_.$"
+                        for character in package
+                    )
+                ):
+                    return package
         return None

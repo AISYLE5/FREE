@@ -30,8 +30,17 @@ _FOF_SILENT = 0x0004
 _FOF_NOERRORUI = 0x0400
 
 
+def remove_path(path: Path, mode: str) -> None:
+    """按清理模式删除文件：``permanent`` 直接删除，其余方式发送到回收站。"""
+
+    if mode == "permanent":
+        path.unlink()
+    else:
+        send_to_recycle_bin(path)
+
+
 def send_to_recycle_bin(path: Path) -> None:
-    """Move a file or folder to the Windows Recycle Bin (recoverable)."""
+    """将文件或文件夹移动到 Windows 回收站（可恢复）。"""
 
     if os.name != "nt":
         raise TrashError("仅 Windows 支持发送到回收站")
@@ -42,7 +51,9 @@ def send_to_recycle_bin(path: Path) -> None:
     operation.wFunc = _FO_DELETE
     operation.pFrom = ctypes.cast(from_buffer, wintypes.LPCWSTR)
     operation.pTo = None
-    operation.fFlags = _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT | _FOF_NOERRORUI
+    operation.fFlags = (
+        _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT | _FOF_NOERRORUI
+    )
     operation.fAnyOperationsAborted = False
     operation.hNameMappings = None
     operation.lpszProgressTitle = None

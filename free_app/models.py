@@ -18,7 +18,7 @@ class Action:
     parameters: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Action":
+    def from_dict(cls, data: dict[str, Any]) -> Action:
         if not isinstance(data, dict):
             raise ValueError("每个动作都必须是对象")
         action_type = data.get("type")
@@ -36,7 +36,7 @@ class TaskDefinition:
     actions: tuple[Action, ...]
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
+    def from_dict(cls, data: dict[str, Any]) -> TaskDefinition:
         task_id = data.get("id")
         name = data.get("name")
         package = data.get("package")
@@ -64,32 +64,20 @@ class TaskDefinition:
         for action in parsed_actions:
             if action.type in {"stop", "launch"} and "package" in action.parameters:
                 action_package = action.parameters["package"]
-                if not isinstance(action_package, str) or action_package.strip() != task_package:
+                if (
+                    not isinstance(action_package, str)
+                    or action_package.strip() != task_package
+                ):
                     raise ValueError(
                         f"动作 {action.type} 的 package 必须与任务顶层 package 一致: "
                         f"{action_package!r} != {task_package!r}"
                     )
-            if action.type == "launch":
-                _validate_launch_wait_seconds(action)
         return cls(
             id=task_id.strip(),
             name=name.strip(),
             package=task_package,
             actions=parsed_actions,
         )
-
-
-def _validate_launch_wait_seconds(action: Action) -> None:
-    """Validate a launch action's ``wait_seconds`` when present."""
-
-    if "wait_seconds" not in action.parameters:
-        return
-    try:
-        action_wait = float(action.parameters["wait_seconds"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("launch 动作的 wait_seconds 必须是数字") from exc
-    if action_wait < 0:
-        raise ValueError("launch 动作的 wait_seconds 必须是非负数字")
 
 
 @dataclass(frozen=True)
@@ -111,8 +99,8 @@ class RunResult:
         *,
         failed_step: str = "准备连接设备",
         error: str | None = None,
-    ) -> "RunResult":
-        """Build a failed result that completed no steps."""
+    ) -> RunResult:
+        """构造一个未完成任何步骤的失败结果。"""
         return cls(
             task_id,
             RunStatus.FAILED,
@@ -129,8 +117,8 @@ class RunResult:
         total_steps: int,
         *,
         failed_step: str = "准备连接设备",
-    ) -> "RunResult":
-        """Build a stopped result that completed no steps."""
+    ) -> RunResult:
+        """构造一个未完成任何步骤的停止结果。"""
         return cls(
             task_id,
             RunStatus.STOPPED,
@@ -142,7 +130,7 @@ class RunResult:
 
 @dataclass(frozen=True)
 class BatchRunResult:
-    """The aggregate result of a sequential run of several tasks."""
+    """多个任务顺序执行的汇总结果。"""
 
     status: RunStatus
     results: tuple[RunResult, ...]
