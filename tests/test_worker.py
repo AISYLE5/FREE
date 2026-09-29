@@ -14,6 +14,7 @@ from free_app.mumu import MuMuStopRequested
 from free_app.worker import (
     BatchTaskWorker,
     TaskWorker,
+    _fatal_device_error,
     _prune_outputs,
     reconnect_device,
 )
@@ -63,6 +64,36 @@ def sanitized_settings(**overrides: Any) -> dict[str, Any]:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_fatal_device_error_matches_offline_and_timeout_messages(self) -> None:
+        """事故日志中的真实错误串必须被判为不可重试。"""
+
+        fatal_messages = [
+            "设备 127.0.0.1:16416 当前状态为 offline",
+            "ADB 命令失败: adb.exe: device offline",
+            "MuMu ADB 设备未上线: 127.0.0.1:16416",
+            "MuMu 实例 1 未返回动态 ADB 地址",
+            "等待 MuMu 动态 ADB 地址超时，最后状态: 未分配",
+            "等待 MuMu ADB 设备超时: 127.0.0.1:16416",
+            "error: device not found",
+        ]
+        for message in fatal_messages:
+            with self.subTest(message=message):
+                self.assertTrue(_fatal_device_error(message))
+
+    def test_fatal_device_error_ignores_action_level_failures(self) -> None:
+        """动作级失败应当照常重试，不能被误判为设备级故障。"""
+
+        retryable = [
+            "UI 未找到可点击目标: {'texts': ['签到']}",
+            "OCR 未找到可点击目标",
+            "目标控件已禁用: 签到",
+            "目标控件没有可点击区域: 签到",
+            "compound 展开失败",
+        ]
+        for message in retryable:
+            with self.subTest(message=message):
+                self.assertFalse(_fatal_device_error(message))
+
     def test_prune_outputs_limits_screenshots_by_max_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -289,6 +320,92 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(adb.reconnect_count, 1)
         self.assertEqual(finished[0].status, RunStatus.SUCCESS)
+
+    def test_batch_worker_skips_mumu_shutdown_when_lock_not_acquired(self) -> None:
+        """拿不到实例锁说明实例正被别人使用，收尾绝不能关闭它。"""
+
+        from free_app.lock import LockError
+
+        task = make_task()
+        worker = BatchTaskWorker(
+            [task],
+            FakeAdb(),
+            Path("screenshots"),
+            0,
+            settings=sanitized_settings(),
+        )
+        finished: list[object] = []
+        worker.finished.connect(finished.append)
+        with (
+            patch.object(
+                worker,
+                "_acquire_instance_lock",
+                side_effect=LockError("实例被另一个 FREE 进程占用"),
+            ),
+            patch("free_app.worker.shutdown_mumu") as shutdown_mumu,
+            patch("free_app.worker.shutdown_mumu_app") as shutdown_app,
+            patch("free_app.worker.cleanup_apps"),
+            patch("free_app.worker.send_run_notification"),
+        ):
+            worker.run()
+
+        shutdown_mumu.assert_not_called()
+        shutdown_app.assert_not_called()
+        self.assertEqual(finished[0].status, RunStatus.FAILED)
+
+    def test_task_worker_skips_mumu_shutdown_when_lock_not_acquired(self) -> None:
+        from free_app.lock import LockError
+
+        task = make_task()
+        worker = TaskWorker(
+            task,
+            FakeAdb(),
+            Path("screenshots"),
+            True,
+            settings=sanitized_settings(),
+        )
+        finished: list[object] = []
+        worker.finished.connect(finished.append)
+        with (
+            patch.object(
+                worker,
+                "_acquire_instance_lock",
+                side_effect=LockError("实例被另一个 FREE 进程占用"),
+            ),
+            patch("free_app.worker.shutdown_mumu") as shutdown_mumu,
+            patch("free_app.worker.shutdown_mumu_app") as shutdown_app,
+            patch("free_app.worker.cleanup_apps"),
+            patch("free_app.worker.send_run_notification"),
+        ):
+            worker.run()
+
+        shutdown_mumu.assert_not_called()
+        shutdown_app.assert_not_called()
+        self.assertEqual(finished[0].status, RunStatus.FAILED)
+
+    def test_worker_releases_instance_lock_after_run(self) -> None:
+        task = make_task()
+        worker = BatchTaskWorker(
+            [task],
+            FakeAdb(),
+            Path("screenshots"),
+            0,
+            settings=sanitized_settings(),
+        )
+        engine = MagicMock()
+        engine.run.return_value = RunResult(task.id, RunStatus.SUCCESS, 1, 1)
+        with (
+            patch("free_app.worker.prepare_device", return_value=True),
+            patch("free_app.worker.shutdown_mumu", return_value=True),
+            patch("free_app.worker.shutdown_mumu_app", return_value=True),
+            patch("free_app.worker.cleanup_apps"),
+            patch("free_app.worker.send_run_notification"),
+            patch.object(worker, "_make_engine", return_value=engine),
+        ):
+            worker.run()
+
+        self.assertFalse(worker._lock_acquired)
+        self.assertIsNone(worker._instance_lock)
 
     def test_batch_worker_stops_after_first_success_when_count_is_higher(self) -> None:
         task = make_task()

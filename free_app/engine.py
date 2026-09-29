@@ -11,13 +11,14 @@ from typing import Any
 from xml.etree.ElementTree import ParseError
 
 from .action_schema import (
+    ATOMIC_TYPE_SET,
     COMPOUND_TYPE,
-    PRIMITIVE_TYPE_SET,
     describe_action,
     effective_parameters,
 )
 from .adb import AdbClient, AdbError
 from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
+from .device_ui import UiSnapshot, text_matches
 from .helpers import (
     LogCallback,
     OcrBoxCallback,
@@ -26,7 +27,6 @@ from .helpers import (
     clamp_coord,
 )
 from .models import Action, RunResult, RunStatus, TaskDefinition
-from .ui_automation import UiSnapshot, text_matches
 
 
 class StopRequested(RuntimeError):
@@ -826,7 +826,7 @@ class AutomationEngine:
             return None
 
 
-# 原语动作类型到执行器的直接映射（方法引用，无反射）。PRIMITIVE_TYPES 声明
+# 原子动作类型到执行器的直接映射（方法引用，无反射）。ATOMIC_TYPES 声明
 # 支持的类型集合；加载时强制校验两个集合完全一致，漏登记直接启动失败。
 _ACTION_HANDLERS: dict[str, Callable[[AutomationEngine, dict[str, Any]], None]] = {
     "stop": AutomationEngine._execute_stop,
@@ -842,6 +842,6 @@ _ACTION_HANDLERS: dict[str, Callable[[AutomationEngine, dict[str, Any]], None]] 
     "capture_screenshot": AutomationEngine._execute_capture_screenshot,
 }
 
-_UNHANDLED_TYPES = sorted(PRIMITIVE_TYPE_SET - set(_ACTION_HANDLERS))
+_UNHANDLED_TYPES = sorted(ATOMIC_TYPE_SET - set(_ACTION_HANDLERS))
 if _UNHANDLED_TYPES:
     raise RuntimeError(f"动作类型缺少处理器: {_UNHANDLED_TYPES}")

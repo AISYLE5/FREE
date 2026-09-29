@@ -24,9 +24,8 @@
       "timeout_seconds": 30,
       "retries": 2,
       "locate": "ui",
-      "target": "text",
-      "texts": ["大会员中心"],
-      "match_mode": "exact"
+      "target": "resource_id",
+      "resource_id": "tv.danmaku.bili:id/mine_vip_layout_refactoring"
     },
     {
       "name": "bilibili_ad",

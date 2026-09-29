@@ -1,16 +1,25 @@
-"""任务管理页：编辑任务、复合动作库与 JSON 预览。"""
-
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
+from PySide6.QtCore import QObject, QPoint, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDoubleValidator,
+    QFont,
+    QGuiApplication,
+    QPainter,
+    QPen,
+)
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -18,20 +27,30 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
+    QPlainTextEdit,
     QSizePolicy,
     QStackedWidget,
     QTabWidget,
+    QToolTip,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from . import styles as _s
-from .action_editor_dialogs import (
-    ActionEditorWidget,
-    ActionListEditorWidget,
+from . import ui_common as _s  # 样式片段现由 ui_common 提供
+from .action_schema import (
+    ATOMIC_TYPES,
+    CLICK_LOCATES,
+    CLICK_UI_TARGETS,
+    COMPOUND_TYPE,
+    DETECT_LOCATES,
+    DETECT_TARGETS,
+    ParamSpec,
+    describe_action,
+    specs_for,
+    validate_action_params,
 )
-from .action_schema import COMPOUND_TYPE, describe_action, validate_action_params
 from .adb import AdbClient
 from .background_task import BackgroundTaskOwner
 from .config import (
@@ -42,20 +61,194 @@ from .config import (
     load_task_directory_raw,
     update_settings,
 )
-from .helpers import deep_copy, write_json_file
-from .message_box import QMessageBox
-from .models import Action, RunResult, TaskDefinition
-from .mumu import connect_to_mumu
-from .settings_dialog import SettingsComboBox, confirm_dialog
-from .task_viewers import (
-    JsonViewerWidget,
-    RunViewerWidget,
-    UiTreeDumpWidget,
-    UiTreeDumpWorker,
+from .device_ui import (
+    UiSnapshot,
+    text_matches_exact,
+    text_matches_fuzzy,
 )
+from .helpers import deep_copy, write_json_file
+from .logging_utils import format_log_line
+from .models import Action, RunResult, RunStatus, TaskDefinition
+from .mumu import connect_to_mumu
 from .trash import TrashError, remove_path
-from .ui_automation import UiSnapshot
+from .ui_common import (
+    PAGE_BASE_QSS,
+    ROW_BUTTON_HEIGHT,
+    TOOL_BUTTON_WIDTH,
+    ElidedLabel,
+    QMessageBox,
+    SettingsComboBox,
+    back_button,
+    card_title,
+    confirm_dialog,
+    danger_button,
+    outline_button,
+    page_title,
+    primary_button,
+    secondary_button,
+)
 
+# "获取包名"结果提示的显示时长（毫秒）。
+COPY_FEEDBACK_MS = 3000
+
+class TaskManagerPage(QWidget):
+    """任务管理页面外壳；内嵌编辑器在此惰性创建。"""
+
+    tasks_changed = Signal()
+    feedback_requested = Signal(str)
+    run_action_requested = Signal(list, str, str)
+    run_stop_requested = Signal()
+    pointer_location_failed = Signal(bool)
+
+    def __init__(
+        self,
+        settings_path: Path,
+        base_directory: Path,
+        on_back: Callable[[], None],
+    ) -> None:
+        super().__init__()
+        self.setObjectName("appRoot")
+        self._settings_path = settings_path
+        self._base_directory = base_directory
+        self.widget: TaskManagerWidget | None = None
+        self._build_ui(on_back)
+        self.setStyleSheet(PAGE_BASE_QSS)
+
+    # ------------------------------------------------------------------ 构建
+
+    def _build_ui(self, on_back: Callable[[], None]) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.setContentsMargins(28, 16, 28, 8)
+        header.addWidget(page_title("任务管理"))
+        header.addStretch(1)
+
+        self.task_manager_pointer_button = secondary_button(
+            "显示坐标",
+            object_name="taskManagerPointerButton",
+            width=TOOL_BUTTON_WIDTH,
+        )
+        self.task_manager_pointer_button.setCheckable(True)
+        self.task_manager_pointer_button.setToolTip(
+            "在 MuMu 模拟器中显示或隐藏鼠标坐标"
+        )
+        self.task_manager_pointer_button.hide()
+        self.task_manager_pointer_button.toggled.connect(self._on_pointer_toggled)
+        header.addWidget(self.task_manager_pointer_button)
+
+        self.task_manager_copy_package_button = secondary_button(
+            "获取包名", width=TOOL_BUTTON_WIDTH
+        )
+        self.task_manager_copy_package_button.setToolTip("获取当前前台应用包名")
+        self.task_manager_copy_package_button.hide()
+        header.addWidget(self.task_manager_copy_package_button)
+
+        self.task_manager_dump_tree_button = secondary_button(
+            "抓取 UI 树", width=TOOL_BUTTON_WIDTH
+        )
+        self.task_manager_dump_tree_button.hide()
+        header.addWidget(self.task_manager_dump_tree_button)
+
+        self.task_manager_view_json_button = secondary_button(
+            "查看 JSON", width=TOOL_BUTTON_WIDTH
+        )
+        self.task_manager_view_json_button.hide()
+        header.addWidget(self.task_manager_view_json_button)
+
+        self.back_button = back_button()
+        self.back_button.clicked.connect(on_back)
+        header.addWidget(self.back_button)
+
+        layout.addLayout(header)
+        self.content_layout = layout
+
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.timeout.connect(self.hide_copy_feedback)
+
+    # -------------------------------------------------------------- 内嵌编辑器
+
+    def ensure_widget(self) -> TaskManagerWidget:
+        """惰性创建内嵌任务管理器并接好它与页头的信号。"""
+
+        if self.widget is None:
+            widget = TaskManagerWidget(self._settings_path, self._base_directory)
+            self.widget = widget
+            self.content_layout.addWidget(widget)
+            widget.tasks_changed.connect(self.tasks_changed.emit)
+            widget.feedback_requested.connect(self.feedback_requested.emit)
+            widget.run_action_requested.connect(self.run_action_requested.emit)
+            widget.run_stop_requested.connect(self.run_stop_requested.emit)
+            widget.pointer_location_failed.connect(
+                self.pointer_location_failed.emit
+            )
+            self.task_manager_copy_package_button.clicked.connect(
+                widget._on_copy_package_clicked
+            )
+            self.task_manager_dump_tree_button.clicked.connect(
+                widget._on_dump_tree_clicked
+            )
+            self.task_manager_view_json_button.clicked.connect(
+                widget._on_view_json_clicked
+            )
+        return self.widget
+
+    def preload(self) -> None:
+        """打开页面：首次创建内嵌编辑器、刷新数据并显示页头按钮。"""
+
+        self.ensure_widget().reload()
+        self.show()
+        for button in (
+            self.task_manager_pointer_button,
+            self.task_manager_copy_package_button,
+            self.task_manager_dump_tree_button,
+            self.task_manager_view_json_button,
+        ):
+            button.show()
+
+    def reload(self) -> None:
+        if self.widget is not None:
+            self.widget.reload()
+
+    def set_pointer_location(self, enabled: bool) -> None:
+        if self.widget is not None:
+            self.widget.set_pointer_location(enabled)
+
+    def revert_pointer_toggle(self, failed: bool) -> None:
+        """后台切换坐标显示失败时回退按钮状态。"""
+
+        self.task_manager_pointer_button.blockSignals(True)
+        self.task_manager_pointer_button.setChecked(not failed)
+        self.task_manager_pointer_button.blockSignals(False)
+
+    def go_back(self) -> bool:
+        """先退出内嵌编辑器；返回是否已被编辑器消费。"""
+
+        return self.widget is not None and self.widget.go_back()
+
+    def _on_pointer_toggled(self, enabled: bool) -> None:
+        self.set_pointer_location(enabled)
+
+    # ------------------------------------------------------------------ 提示
+
+    def show_copy_feedback(self, message: str) -> None:
+        """在"获取包名"按钮下方显示 3 秒提示。"""
+
+        position = self.task_manager_copy_package_button.mapToGlobal(
+            QPoint(0, self.task_manager_copy_package_button.height() + 6)
+        )
+        QToolTip.showText(position, message, self.task_manager_copy_package_button)
+        self._feedback_timer.start(COPY_FEEDBACK_MS)
+
+    def hide_copy_feedback(self) -> None:
+        QToolTip.hideText()
+
+    def shutdown(self) -> None:
+        if self.widget is not None:
+            self.widget.shutdown()
 
 @dataclass
 class _EmbeddedNavigator:
@@ -86,7 +279,6 @@ class _EmbeddedNavigator:
         self.original = None
         return return_panel
 
-
 @dataclass
 class _EntryPanelState:
     """一个名称列表页（任务 / 复合任务）的选中与草稿状态。"""
@@ -94,7 +286,6 @@ class _EntryPanelState:
     selected: str | None = None
     creating: bool = False
     unsaved: set[str] = field(default_factory=set)
-
 
 @dataclass
 class _EntryListPanel:
@@ -116,7 +307,6 @@ class _EntryListPanel:
     switch_label: str  # 未保存切换确认文案，如 "切换任务"
     new_label: str  # "新建任务"
     on_empty: Callable[[], None]  # 列表为空且无选中时的兜底
-
 
 class _TaskToast(QFrame):
     """任务管理页短暂错误提示用的非模态通知。"""
@@ -190,7 +380,6 @@ class _TaskToast(QFrame):
                 available.center().x() - self.width() // 2,
                 available.center().y() - self.height() // 2,
             )
-
 
 class TaskManagerWidget(BackgroundTaskOwner, QWidget):
     """完整的任务管理面板：任务、动作编辑器与复合动作库。"""
@@ -517,20 +706,20 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
         operation_layout = QHBoxLayout()
         operation_layout.setContentsMargins(14, 8, 14, 8)
         operation_layout.setSpacing(8)
-        self.add_button = QPushButton("添加")
-        self.add_button.setObjectName("settingsTestButton")
+        # 操作条上的一排按钮：统一 78×40，样式由 objectName 决定。
+        self.add_button = secondary_button(
+            "添加", width=None, object_name="settingsTestButton"
+        )
         self.add_button.clicked.connect(self._add_current)
-        self.copy_button = QPushButton("复制")
-        self.copy_button.setObjectName("settingsTestButton")
+        self.copy_button = secondary_button(
+            "复制", width=None, object_name="settingsTestButton"
+        )
         self.copy_button.clicked.connect(self._duplicate_current)
-        self.delete_button = QPushButton("删除")
-        self.delete_button.setObjectName("dangerButton")
+        self.delete_button = danger_button("删除", minimum_width=None)
         self.delete_button.clicked.connect(self._delete_current)
-        self.run_action_button = QPushButton("运行")
-        self.run_action_button.setObjectName("runActionButton")
+        self.run_action_button = outline_button("运行", object_name="runActionButton")
         self.run_action_button.clicked.connect(self._run_current)
-        self.cancel_button = QPushButton("取消")
-        self.cancel_button.setObjectName("quietButton")
+        self.cancel_button = outline_button("取消", object_name="quietButton")
         self.cancel_button.clicked.connect(self._cancel_current_editor)
         for button in (
             self.add_button,
@@ -540,17 +729,17 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
             self.cancel_button,
         ):
             button.setFixedWidth(78)
-            button.setMinimumHeight(40)
+            button.setMinimumHeight(ROW_BUTTON_HEIGHT)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             operation_layout.addWidget(button)
         operation_layout.addStretch(1)
         self.dirty_label = QLabel("未保存")
         self.dirty_label.setObjectName("taskManagerDirtyLabel")
         operation_layout.addWidget(self.dirty_label)
-        self.save_button = QPushButton("保存")
-        self.save_button.setObjectName("taskManagerOperationSave")
-        self.save_button.setMinimumHeight(40)
-        self.save_button.setDefault(True)
+        self.save_button = primary_button(
+            "保存", object_name="taskManagerOperationSave"
+        )
+        self.save_button.setMinimumHeight(ROW_BUTTON_HEIGHT)
         self.save_button.clicked.connect(self._save_current)
         operation_layout.addWidget(self.save_button)
         right_layout.addLayout(operation_layout)
@@ -561,9 +750,8 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
 
     @staticmethod
     def _card_title(text: str) -> QLabel:
-        title = QLabel(text)
-        title.setObjectName("settingsCardTitle")
-        return title
+        # 卡片标题统一走 ui_common，避免各处重复 "QLabel + settingsCardTitle"。
+        return card_title(text)
 
     @staticmethod
     def _disable_context_menu(widget: QWidget) -> None:
@@ -2282,3 +2470,1077 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
             + _s.COMMON_CONTROLS_QSS
             + "        "
         )
+
+class UiTreeDumpWorker(QObject):
+    """在 GUI 线程之外抓取当前 UI 树（连接设备、获取 XML、解析快照）。"""
+
+    succeeded = Signal(object, object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, settings: dict[str, Any]) -> None:
+        super().__init__()
+        self._settings = dict(settings)
+        self._stop_requested = Event()
+
+    def request_stop(self) -> None:
+        self._stop_requested.set()
+
+    def run(self) -> None:
+        try:
+            if self._stop_requested.is_set():
+                return
+            adb = connect_to_mumu(self._settings)
+            if self._stop_requested.is_set():
+                return
+            xml = adb.dump_ui()
+            snapshot = UiSnapshot.from_xml(xml)
+        except Exception as exc:
+            if not self._stop_requested.is_set():
+                self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(snapshot, adb)
+        finally:
+            # finished 驱动 thread.quit：此前 run 从不触发它，线程事件循环
+            # 永不退出，应用退出时 QThread 仍在运行（destroyed-while-running）。
+            self.finished.emit()
+
+def _ui_tree_search_matches(
+    label: str, resource_id: str, needle: str, mode: str
+) -> bool:
+    """按精确或模糊（``%`` / ``_`` / 子串）匹配合并行的 ``label`` 或 ``resource_id``；空搜索词匹配全部。"""
+
+    needle = needle.strip()
+    if not needle:
+        return True
+    if mode == "exact":
+        return text_matches_exact(label, needle) or resource_id.strip() == needle
+    return text_matches_fuzzy(label, needle) or needle.lower() in resource_id.lower()
+
+class JsonViewerWidget(QWidget):
+    """任务或复合任务 JSON 数据的只读内嵌查看器。"""
+
+    def __init__(self, parent: QWidget | None, data: Any) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(self._style_sheet())
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+        self.editor = QPlainTextEdit()
+        self.editor.setReadOnly(True)
+        self.editor.setFont(QFont("Microsoft YaHei", 10))
+        self.editor.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
+        layout.addWidget(self.editor, 1)
+
+    def load_data(self, data: Any) -> None:
+        self.editor.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
+
+    @staticmethod
+    def _style_sheet() -> str:
+        return (
+            "\n"
+            + _s.PANEL_BASE_QSS
+            + _s.PANEL_CONTENT_QSS
+            + _s.CARD_TITLE_QSS
+            + _s.OCR_FEEDBACK_QSS
+            + _s.MESSAGE_BOX_QSS
+            + _s.COMMON_CONTROLS_QSS
+            + "        "
+        )
+
+class RunViewerWidget(QWidget):
+    """单动作调试运行用的内嵌输出面板。"""
+
+    stop_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setStyleSheet(self._style_sheet())
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        title_label = card_title("运行输出")
+        header.addWidget(title_label)
+        self.status_label = QLabel("待命")
+        self.status_label.setObjectName("runStatusLabel")
+        header.addWidget(self.status_label)
+        header.addStretch(1)
+        # 运行输出页头三个按钮都走 ui_common 的按钮工厂（尺寸/外观单一来源）。
+        self.stop_button = outline_button("停止", object_name="runStopButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        header.addWidget(self.stop_button)
+        layout.addLayout(header)
+
+        self.progress_label = QLabel("准备运行")
+        self.progress_label.setObjectName("settingsOcrFeedback")
+        layout.addWidget(self.progress_label)
+
+        self.log_edit = QPlainTextEdit()
+        self.log_edit.setObjectName("runLogEdit")
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setFont(QFont("Microsoft YaHei", 10))
+        layout.addWidget(self.log_edit, 1)
+
+        hint = QLabel("调试运行不会自动清理 App 或关闭 MuMu。")
+        hint.setObjectName("settingsOcrFeedback")
+        layout.addWidget(hint)
+
+    def start_run(self, task_name: str) -> None:
+        """重置面板并把运行标记为进行中。"""
+        self.status_label.setText("运行中")
+        self._paint_status("#0c6e63")
+        self.progress_label.setText(f"{task_name or '单动作测试'} · 准备连接设备")
+        self.log_edit.clear()
+        self.stop_button.setEnabled(True)
+
+    def append_log(self, message: str) -> None:
+        """追加一行带时间戳的日志，并保持视图滚动到底部。"""
+        self.log_edit.appendPlainText(format_log_line(message))
+        scroll_bar = self.log_edit.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+
+    def set_progress(self, index: int, total: int, description: str) -> None:
+        self.progress_label.setText(f"当前动作 {index} / {total} · {description}")
+
+    def finish_run(self, result: RunResult) -> None:
+        """在内嵌面板中显示最终状态与结果摘要。"""
+        self.stop_button.setEnabled(False)
+        if result.status == RunStatus.SUCCESS:
+            self.status_label.setText("成功")
+            self._paint_status("#0c6e63")
+        elif result.status == RunStatus.STOPPED:
+            self.status_label.setText("已停止")
+            self._paint_status("#95651b")
+        else:
+            self.status_label.setText("失败")
+            self._paint_status("#a3403b")
+        self.progress_label.setText(
+            f"当前动作 {result.completed_steps} / {result.total_steps}"
+        )
+        error = f"，错误: {result.error}" if result.error else ""
+        self.append_log(
+            f"运行结束: status={result.status.value}, "
+            f"completed={result.completed_steps}/{result.total_steps}{error}"
+        )
+
+    def abort_run(self, message: str) -> None:
+        """准备失败后把面板标记为未运行。"""
+        self.stop_button.setEnabled(False)
+        self.status_label.setText("未运行")
+        self._paint_status("#a3403b")
+        self.progress_label.setText("设备准备失败")
+        self.append_log(message)
+
+    def _paint_status(self, color: str) -> None:
+        self.status_label.setStyleSheet(
+            f"font-size: 13px; font-weight: 700; color: {color}; "
+            "background: #ffffff; border: 1px solid #cbdcd6; "
+            "border-radius: 6px; padding: 7px 14px;"
+        )
+
+    @staticmethod
+    def _style_sheet() -> str:
+        return (
+            "\n"
+            + _s.PANEL_BASE_QSS
+            + _s.PANEL_CONTENT_QSS
+            + _s.CARD_TITLE_QSS
+            + _s.OCR_FEEDBACK_QSS
+            + "            QPushButton#runStopButton {\n"
+            "                color: #ffffff;\n"
+            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d6534d, stop:1 #bd403b);\n"
+            "                border: none;\n"
+            "                font-weight: 700;\n"
+            "            }\n"
+            "            QPushButton#runStopButton:disabled {\n"
+            "                color: #9aa9a7;\n"
+            "                background: #e9eeec;\n"
+            "                border: 1px solid #dce5e2;\n"
+            "            }\n"
+            "            QPushButton#runStopButton:hover {\n"
+            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #bd403b, stop:1 #a93632);\n"
+            "            }\n" + _s.MESSAGE_BOX_QSS + _s.COMMON_CONTROLS_QSS + "        "
+        )
+
+class UiTreeDumpWidget(QWidget):
+    """调试用的内嵌 UI 树查看器；支持从选中节点插入点击动作。"""
+
+    action_inserted = Signal(dict)
+    try_click_requested = Signal(int, int, str)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setStyleSheet(self._style_sheet())
+        self._snapshot: UiSnapshot | None = None
+        self._all_items: list[QTreeWidgetItem] = []
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+        title_label = card_title("UI 树查看器")
+        layout.addWidget(title_label)
+        search_row = QHBoxLayout()
+        search_row.setSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索文本或 resource-id…")
+        self.search_edit.textChanged.connect(self._schedule_filter)
+        self.search_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        search_row.addWidget(self.search_edit, 1)
+        self.search_mode_combo = SettingsComboBox()
+        self.search_mode_combo.addItem("模糊", "fuzzy")
+        self.search_mode_combo.addItem("精确", "exact")
+        self.search_mode_combo.setCurrentIndex(self.search_mode_combo.findData("fuzzy"))
+        self.search_mode_combo.currentIndexChanged.connect(self._schedule_filter)
+        self.search_mode_combo.setFixedWidth(88)
+        search_row.addWidget(self.search_mode_combo)
+        # 输入防抖：逐键过滤会对数百个节点逐个 setHidden（每个都触发重排），
+        # 停顿 200ms 后才真正执行。
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._apply_filter)
+        self.try_click_button = outline_button(
+            "尝试点击", object_name="settingsTryButton"
+        )
+        self.try_click_button.setToolTip("在模拟器中点击当前选中节点的中心")
+        self.try_click_button.clicked.connect(self._try_click)
+        self.try_click_button.setEnabled(False)
+        search_row.addWidget(self.try_click_button)
+        self.insert_mode_combo = SettingsComboBox()
+        self.insert_mode_combo.addItem("ID", "resource_id")
+        self.insert_mode_combo.addItem("文本", "text")
+        search_row.addWidget(self.insert_mode_combo)
+        self.insert_button = outline_button(
+            "插入点击动作", object_name="settingsTestButton"
+        )
+        self.insert_button.clicked.connect(self._insert_click)
+        search_row.addWidget(self.insert_button)
+        layout.addLayout(search_row)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["文本 / 描述", "resource-id", "坐标"])
+        self.tree.setColumnWidth(0, 280)
+        self.tree.setColumnWidth(1, 280)
+        self.tree.itemDoubleClicked.connect(lambda _item, _column: self._insert_click())
+        layout.addWidget(self.tree, 1)
+        hint = QLabel(
+            "选中节点后可先尝试点击，或双击节点生成 click 动作插入任务动作列表。"
+        )
+        hint.setObjectName("settingsOcrFeedback")
+        layout.addWidget(hint)
+
+    @staticmethod
+    def _style_sheet() -> str:
+        return (
+            "\n"
+            + _s.PANEL_BASE_QSS
+            + _s.PANEL_CONTENT_QSS
+            + _s.CARD_TITLE_QSS
+            + _s.OCR_FEEDBACK_QSS
+            + "            QPushButton#settingsTryButton {\n"
+            "                color: #ffffff;\n"
+            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b9b8b, stop:1 #137f73);\n"
+            "                border: none;\n"
+            "                font-weight: 700;\n"
+            "            }\n"
+            "            QPushButton#settingsTryButton:hover {\n"
+            "                background: " + _s.GREEN_VGRAD_HOVER + ";\n"
+            "            }\n" + _s.MESSAGE_BOX_QSS + _s.COMMON_CONTROLS_QSS + "        "
+        )
+
+    def load_snapshot(self, snapshot: UiSnapshot) -> None:
+        self._snapshot = snapshot
+        self.tree.clear()
+        self._all_items.clear()
+        self.search_edit.clear()
+        for index, node in enumerate(snapshot.nodes):
+            if not node.clickable:
+                continue
+            label = node.label or ""
+            resource_id = node.resource_id or ""
+            bounds = (
+                f"[{node.bounds.left},{node.bounds.top}][{node.bounds.right},{node.bounds.bottom}]"
+                if node.bounds
+                else ""
+            )
+            item = QTreeWidgetItem([label, resource_id, bounds])
+            item.setData(0, Qt.ItemDataRole.UserRole, index)
+            self.tree.addTopLevelItem(item)
+        self._all_items = []
+        for index in range(self.tree.topLevelItemCount()):
+            tree_item = self.tree.topLevelItem(index)
+            if tree_item is not None:
+                self._all_items.append(tree_item)
+        self.try_click_button.setEnabled(bool(self._all_items))
+
+    def _schedule_filter(self, *_args: object) -> None:
+        self._search_timer.start()
+
+    def _apply_filter(self) -> None:
+        """隐藏与当前搜索词不匹配的 UI 树节点。"""
+        needle = self.search_edit.text().strip()
+        mode = str(self.search_mode_combo.currentData() or "fuzzy")
+        for item in self._all_items:
+            matched = not needle or _ui_tree_search_matches(
+                item.text(0), item.text(1), needle, mode
+            )
+            item.setHidden(not matched)
+
+    def _insert_click(self) -> None:
+        item = self.tree.currentItem()
+        if item is None or self._snapshot is None:
+            return
+        index = item.data(0, Qt.ItemDataRole.UserRole)
+        if (
+            not isinstance(index, int)
+            or index < 0
+            or index >= len(self._snapshot.nodes)
+        ):
+            return
+        node = self._snapshot.nodes[index]
+        mode = self.insert_mode_combo.currentData() or "text"
+        if mode == "resource_id":
+            if not node.resource_id:
+                QMessageBox.information(
+                    self, "无法插入", "该节点没有 resource-id，请选择其他插入方式。"
+                )
+                return
+            action = {
+                "type": "click",
+                "locate": "ui",
+                "target": "resource_id",
+                "resource_id": node.resource_id,
+                "timeout_seconds": 15,
+            }
+        elif mode == "text":
+            if not node.label:
+                QMessageBox.information(
+                    self, "无法插入", "该节点没有文本，请选择其他插入方式。"
+                )
+                return
+            action = {
+                "type": "click",
+                "locate": "ui",
+                "target": "text",
+                "texts": [node.label],
+                "match_mode": "exact",
+                "timeout_seconds": 15,
+            }
+        else:
+            QMessageBox.information(self, "无法插入", "请选择 ID 或文本插入方式。")
+            return
+        self.action_inserted.emit(action)
+
+    def _try_click(self) -> None:
+        if self._snapshot is None:
+            QMessageBox.information(self, "无法尝试点击", "请先抓取 UI 树。")
+            return
+        item = self.tree.currentItem()
+        if item is None:
+            QMessageBox.information(self, "无法尝试点击", "请先选择一个节点。")
+            return
+        index = item.data(0, Qt.ItemDataRole.UserRole)
+        if (
+            not isinstance(index, int)
+            or index < 0
+            or index >= len(self._snapshot.nodes)
+        ):
+            return
+        node = self._snapshot.nodes[index]
+        if not node.bounds:
+            QMessageBox.information(self, "无法尝试点击", "该节点没有可点击坐标。")
+            return
+        x, y = node.bounds.center
+        self.try_click_requested.emit(x, y, node.label)
+
+ACTION_TYPE_LABELS: dict[str, str] = {
+    "stop": "退出应用",
+    "launch": "启动应用",
+    "wait": "等待",
+    "back": "返回",
+    "click": "点击",
+    "swipe": "滑动",
+    "swipe_until": "滑动直到",
+    "detect": "检测",
+    "if": "分支",
+    "loop_until": "循环直到",
+    "capture_screenshot": "截图",
+    "compound": "复合动作",
+}
+
+OPTION_LABELS: dict[str, str] = {
+    "text": "文本",
+    "ui": "UI",
+    "resource_id": "ID",
+    "coordinate": "坐标",
+    "ocr": "OCR",
+    "exact": "精确",
+    "fuzzy": "模糊",
+}
+
+class _StepsFieldLabel(QWidget):
+    """两行式表单标签：行标题，下方是步骤计数。
+
+    用作 actions 字段在 QFormLayout 中的标签单元格，让“N 个步骤”
+    计数紧贴行标题下方，而不是落在按钮一侧。
+    """
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.summary = ElidedLabel("0 个步骤")
+        self.summary.setStyleSheet("color: #6e8580;")
+        layout.addWidget(title_label)
+        layout.addWidget(self.summary)
+
+    def set_summary_text(self, text: str) -> None:
+        self.summary.setText(text)
+
+class _ActionStepsField(QWidget):
+    """嵌套动作列表字段，可把编辑委托给外部宿主。"""
+
+    changed = Signal()
+
+    # 能舒适容纳编辑/清空按钮的最小宽度。
+    _FIELD_MIN_WIDTH = 220
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        label: str = "步骤",
+        key: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self._steps: list[dict[str, Any]] = []
+        self._key = key
+        self._edit_handler: Callable[[str, list[dict[str, Any]]], None] | None = None
+        self._summary_label: _StepsFieldLabel | None = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addStretch(1)
+        # 保持原样：这两个按钮不设 objectName，样式来自通用按钮规则。
+        edit_button = outline_button("编辑", object_name=None)
+        edit_button.clicked.connect(self._edit_steps)
+        clear_button = outline_button("清空", object_name=None)
+        clear_button.clicked.connect(self._clear_steps)
+        layout.addWidget(edit_button)
+        layout.addWidget(clear_button)
+        self.setMinimumWidth(self._FIELD_MIN_WIDTH)
+        self._refresh()
+
+    def set_summary_label(self, label: _StepsFieldLabel) -> None:
+        """绑定两行式表单标签，其计数行由本字段负责更新。"""
+        self._summary_label = label
+        self._refresh()
+
+    def set_edit_handler(
+        self,
+        handler: Callable[[str, list[dict[str, Any]]], None] | None,
+    ) -> None:
+        self._edit_handler = handler
+
+    def set_steps(self, steps: list[dict[str, Any]]) -> None:
+        self._steps = deep_copy(steps) if isinstance(steps, list) else []
+        self._refresh()
+
+    def get_steps(self) -> list[dict[str, Any]]:
+        return deep_copy(self._steps)
+
+    def _refresh(self) -> None:
+        text = f"{len(self._steps)} 个步骤"
+        if self._summary_label is not None:
+            self._summary_label.set_summary_text(text)
+
+    def _edit_steps(self) -> None:
+        if self._edit_handler is not None:
+            self._edit_handler(self._key, self.get_steps())
+
+    def _clear_steps(self) -> None:
+        self._steps = []
+        self._refresh()
+        self.changed.emit()
+
+class _ActionFormMixin:
+    """动作表单构建与取值的共享逻辑（mixin；不是控件）。
+
+    具体类必须提供：``type_combo``、``_params_form``、``_field_widgets``、
+    ``_active_specs``、``_initial``、``_compound_library`` 与
+    ``_allow_compound``。
+    """
+
+    _ACTION_FIELD_WIDTH = 200
+
+    def _build_type_section(self) -> tuple[QFormLayout, QWidget]:
+        """构建动作类型下拉框与参数表单区域（由具体编辑器共享）。"""
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        self.type_combo = SettingsComboBox()
+        for action_type in ATOMIC_TYPES:
+            self.type_combo.addItem(
+                ACTION_TYPE_LABELS.get(action_type, action_type), action_type
+            )
+        if self._allow_compound:
+            self.type_combo.addItem(
+                ACTION_TYPE_LABELS.get(COMPOUND_TYPE, COMPOUND_TYPE), COMPOUND_TYPE
+            )
+        self.type_combo.currentIndexChanged.connect(self._rebuild_form)
+        form.addRow("动作类型", self.type_combo)
+        type_label_item = form.itemAt(0, QFormLayout.ItemRole.LabelRole)
+        if type_label_item is not None and type_label_item.widget() is not None:
+            type_label_item.widget().setMinimumWidth(80)
+        self._align_form_fields(form)
+        container = QWidget()
+        container.setObjectName("actionParamsContainer")
+        self._params_form = QFormLayout(container)
+        self._params_form.setContentsMargins(0, 0, 0, 0)
+        self._params_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._params_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
+        )
+        self._params_form.setHorizontalSpacing(14)
+        self._params_form.setVerticalSpacing(10)
+        return form, container
+
+    @staticmethod
+    def _align_form_labels(form: QFormLayout) -> None:
+        for row in range(form.rowCount()):
+            label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            label = label_item.widget() if label_item is not None else None
+            if label is not None:
+                label.setMinimumWidth(80)
+
+    @classmethod
+    def _align_form_fields(cls, form: QFormLayout) -> None:
+        for row in range(form.rowCount()):
+            field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            field = field_item.widget() if field_item is not None else None
+            if field is None or isinstance(field, _ActionStepsField):
+                # 步骤字段自行管理宽度，因此其编辑/清空
+                # 按钮总能放得下；强制 200px 会裁切按钮文字。
+                continue
+            field.setFixedWidth(cls._ACTION_FIELD_WIDTH)
+
+    def _configure_steps_field(self, _widget: QWidget) -> None:
+        """创建 ``_ActionStepsField`` 后接线用的钩子；默认空操作。"""
+
+    def _load_initial(self) -> None:
+        action_type = str(self._initial.get("type", "click"))
+        index = self.type_combo.findData(action_type)
+        if index >= 0:
+            self.type_combo.setCurrentIndex(index)
+        self._rebuild_form()
+        if action_type == COMPOUND_TYPE:
+            name = str(self._initial.get("name", ""))
+            name_combo = self._field_widgets.get("name")
+            if isinstance(name_combo, QComboBox) and name:
+                name_index = name_combo.findData(name)
+                if name_index >= 0:
+                    name_combo.setCurrentIndex(name_index)
+            self._rebuild_form()
+            return
+        for key in ("locate", "mode", "target"):
+            if key not in self._initial:
+                continue
+            widget = self._field_widgets.get(key)
+            if isinstance(widget, QComboBox):
+                self._set_widget_value(widget, self._initial[key])
+        self._rebuild_form()
+        for key, widget in list(self._field_widgets.items()):
+            if key in ("locate", "mode", "target") or key not in self._initial:
+                continue
+            self._set_widget_value(widget, self._initial[key])
+
+    def _rebuild_form(self) -> None:
+        form = self._params_form
+        if form is None:
+            return
+        old_widgets = dict(self._field_widgets)
+        locate = (
+            old_widgets["locate"].currentData()
+            if isinstance(old_widgets.get("locate"), QComboBox)
+            else None
+        )
+        target = (
+            old_widgets["target"].currentData()
+            if isinstance(old_widgets.get("target"), QComboBox)
+            else None
+        )
+        compound_name = (
+            old_widgets["name"].currentData()
+            if isinstance(old_widgets.get("name"), QComboBox)
+            else None
+        )
+        while form.rowCount():
+            taken = form.takeRow(0)
+            for item in (taken.labelItem, taken.fieldItem):
+                if item is not None:
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.deleteLater()
+        self._field_widgets.clear()
+        self._active_specs.clear()
+        action_type = self.type_combo.currentData()
+        if action_type == COMPOUND_TYPE:
+            self._build_compound_fields(form, compound_name)
+            self._align_form_labels(form)
+            self._align_form_fields(form)
+            return
+        params: dict[str, Any] = {}
+        if action_type == "click":
+            locate = locate if locate in CLICK_LOCATES else "ui"
+            locate_combo = SettingsComboBox()
+            for option in CLICK_LOCATES:
+                locate_combo.addItem(OPTION_LABELS.get(option, option), option)
+            locate_combo.setCurrentIndex(locate_combo.findData(locate))
+            locate_combo.currentIndexChanged.connect(self._rebuild_form)
+            self._field_widgets["locate"] = locate_combo
+            form.addRow("点击目标*", locate_combo)
+            params["locate"] = locate
+            if locate == "ui":
+                target = target if target in CLICK_UI_TARGETS else "text"
+                target_combo = SettingsComboBox()
+                for option in CLICK_UI_TARGETS:
+                    target_combo.addItem(OPTION_LABELS.get(option, option), option)
+                target_combo.setCurrentIndex(target_combo.findData(target))
+                target_combo.currentIndexChanged.connect(self._rebuild_form)
+                self._field_widgets["target"] = target_combo
+                form.addRow("UI 目标*", target_combo)
+                params["target"] = target
+        elif action_type in {"detect", "swipe_until"}:
+            locate = locate if locate in DETECT_LOCATES else "ocr"
+            locate_combo = SettingsComboBox()
+            for option in DETECT_LOCATES:
+                locate_combo.addItem(OPTION_LABELS.get(option, option), option)
+            locate_combo.setCurrentIndex(locate_combo.findData(locate))
+            locate_combo.currentIndexChanged.connect(self._rebuild_form)
+            self._field_widgets["locate"] = locate_combo
+            form.addRow("检测来源*", locate_combo)
+            params["locate"] = locate
+            if locate == "ui":
+                target = target if target in DETECT_TARGETS else "text"
+                target_combo = SettingsComboBox()
+                for option in DETECT_TARGETS:
+                    target_combo.addItem(OPTION_LABELS.get(option, option), option)
+                target_combo.setCurrentIndex(target_combo.findData(target))
+                target_combo.currentIndexChanged.connect(self._rebuild_form)
+                self._field_widgets["target"] = target_combo
+                form.addRow("UI 目标*", target_combo)
+                params["target"] = target
+        for spec in specs_for(action_type, params):
+            widget = self._create_field_widget(spec)
+            self._configure_steps_field(widget)
+            self._field_widgets[spec.key] = widget
+            self._active_specs[spec.key] = spec
+            row_label = spec.label + ("*" if spec.required else "")
+            if isinstance(widget, _ActionStepsField):
+                # 两行式标签单元格：标题行下方带"N 个步骤"计数，
+                # 使按钮保持在字段行上。
+                label_widget = _StepsFieldLabel(row_label)
+                widget.set_summary_label(label_widget)
+                form.addRow(label_widget, widget)
+            else:
+                form.addRow(row_label, widget)
+        self._align_form_labels(form)
+        self._align_form_fields(form)
+
+    def _build_compound_fields(
+        self, form: QFormLayout, selected_name: str | None
+    ) -> None:
+        combo = SettingsComboBox()
+        for name in sorted(self._compound_library):
+            combo.addItem(name, name)
+        if selected_name:
+            index = combo.findData(selected_name)
+            combo.setCurrentIndex(index if index >= 0 else -1)
+        self._field_widgets["name"] = combo
+        form.addRow("复合动作*", combo)
+
+    def _create_field_widget(self, spec: ParamSpec) -> QWidget:
+        widget: QWidget
+        if spec.kind == "number":
+            widget = QLineEdit()
+            widget.setValidator(
+                QDoubleValidator(-1_000_000_000, 1_000_000_000, 3, widget)
+            )
+            if spec.default is not None:
+                widget.setPlaceholderText(str(spec.default))
+            elif spec.placeholder:
+                # 无 default 的数字字段（如启动后等待）直接把占位值写成数值。
+                widget.setPlaceholderText(spec.placeholder)
+        elif spec.kind == "bool":
+            widget = QCheckBox()
+            widget.setText("是")
+            if spec.default is True:
+                widget.setChecked(True)
+        elif spec.kind == "select":
+            widget = SettingsComboBox()
+            for option in spec.options:
+                widget.addItem(OPTION_LABELS.get(option, option), option)
+            if spec.default is not None:
+                index = widget.findData(spec.default)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+        elif spec.kind == "actions":
+            widget = _ActionStepsField(label=spec.label, key=spec.key)
+        elif spec.kind == "list":
+            widget = QLineEdit()
+            widget.setPlaceholderText(spec.placeholder or "例如：A,B")
+        else:
+            widget = QLineEdit()
+            widget.setPlaceholderText(spec.placeholder)
+        return widget
+
+    def _set_widget_value(self, widget: QWidget, value: Any) -> None:
+        if isinstance(widget, _ActionStepsField):
+            widget.set_steps(value if isinstance(value, list) else [])
+            return
+        if isinstance(widget, QComboBox):
+            index = widget.findData(value)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+            return
+        if isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+            return
+        if isinstance(widget, QLineEdit):
+            if isinstance(value, list):
+                widget.setText(", ".join(str(item) for item in value))
+            else:
+                widget.setText(str(value))
+
+    def _widget_value(self, widget: QWidget, spec: ParamSpec) -> tuple[Any, str | None]:
+        kind = spec.kind
+        if isinstance(widget, _ActionStepsField):
+            steps = widget.get_steps()
+            return (steps if steps else None), None
+        if kind == "value":
+            text = widget.text().strip()
+            if not text:
+                if spec.required:
+                    return None, f"{spec.label}不能为空"
+                return None, None
+            if text.lower() in {"true", "false"}:
+                return text.lower() == "true", None
+            return text, None
+        if kind == "text":
+            text = widget.text().strip()
+            if not text:
+                if spec.required:
+                    return None, f"{spec.label}不能为空"
+                return None, None
+            return text, None
+        if kind == "number":
+            text = widget.text().strip()
+            if not text:
+                if spec.required:
+                    return None, f"{spec.label}不能为空"
+                return None, None
+            try:
+                number = float(text)
+            except ValueError:
+                return None, f"{spec.label}必须是数字"
+            return (int(number) if number.is_integer() else number), None
+        if kind == "bool":
+            return (True if widget.isChecked() else None), None
+        if kind == "list":
+            items = [
+                item.strip()
+                for item in widget.text().replace("，", ",").split(",")
+                if item.strip()
+            ]
+            if not items:
+                if spec.required:
+                    return None, f"{spec.label}不能为空"
+                return None, None
+            return items, None
+        if kind == "select":
+            return widget.currentData(), None
+        return None, None
+
+    def _apply_locate_target(self, data: dict[str, Any]) -> None:
+        """把 locate/target 下拉框取值写入 click/detect/swipe_until 动作数据。"""
+        locate_combo = self._field_widgets.get("locate")
+        if isinstance(locate_combo, QComboBox):
+            data["locate"] = locate_combo.currentData()
+        target_combo = self._field_widgets.get("target")
+        if isinstance(target_combo, QComboBox):
+            data["target"] = target_combo.currentData()
+
+    def collect(self) -> dict[str, Any] | None:
+        action_type = self.type_combo.currentData()
+        if action_type == COMPOUND_TYPE:
+            name_combo = self._field_widgets.get("name")
+            name = (
+                name_combo.currentData() if isinstance(name_combo, QComboBox) else None
+            )
+            if not name:
+                QMessageBox.warning(self, "无法保存", "请选择复合动作。")
+                return None
+            data: dict[str, Any] = {
+                key: deep_copy(value)
+                for key, value in self._initial.items()
+                if key in {"description"}
+            }
+            data.update({"type": COMPOUND_TYPE, "name": str(name)})
+            return data
+        managed_keys = {"type", "description"}
+        managed_keys.update(self._active_specs)
+        data = {
+            key: deep_copy(value)
+            for key, value in self._initial.items()
+            if key in managed_keys
+        }
+        data["type"] = str(action_type)
+        if action_type in {"click", "detect", "swipe_until"}:
+            self._apply_locate_target(data)
+        errors: list[str] = []
+        for key, spec in self._active_specs.items():
+            widget = self._field_widgets.get(key)
+            if widget is None:
+                continue
+            value, error = self._widget_value(widget, spec)
+            if error is not None:
+                errors.append(error)
+                continue
+            if value is not None:
+                data[key] = value
+        if errors:
+            QMessageBox.warning(self, "无法保存", "\n".join(errors))
+            return None
+        return data
+
+    def snapshot_data(self) -> dict[str, Any]:
+        """返回当前表单取值，不校验、不弹窗。"""
+        action_type = self.type_combo.currentData()
+        if action_type == COMPOUND_TYPE:
+            name_combo = self._field_widgets.get("name")
+            name = name_combo.currentData() if isinstance(name_combo, QComboBox) else ""
+            data: dict[str, Any] = {
+                key: deep_copy(value)
+                for key, value in self._initial.items()
+                if key in {"description"}
+            }
+            data.update({"type": COMPOUND_TYPE, "name": str(name)})
+            return data
+        managed_keys = {"type", "description"}
+        managed_keys.update(self._active_specs)
+        data = {
+            key: deep_copy(value)
+            for key, value in self._initial.items()
+            if key in managed_keys
+        }
+        data["type"] = str(action_type)
+        if action_type in {"click", "detect", "swipe_until"}:
+            self._apply_locate_target(data)
+        for key, spec in self._active_specs.items():
+            widget = self._field_widgets.get(key)
+            if widget is None:
+                continue
+            value = self._snapshot_widget_value(widget, spec)
+            if value is not None:
+                data[key] = value
+        return data
+
+    def _snapshot_widget_value(self, widget: QWidget, spec: ParamSpec) -> Any:
+        value, error = self._widget_value(widget, spec)
+        if value is not None or error is None:
+            return value
+        if isinstance(widget, QLineEdit):
+            text = widget.text()
+            return text if text.strip() else None
+        return None
+
+class ActionEditorWidget(QWidget, _ActionFormMixin):
+    """单个动作（原始或复合）的可内嵌表单编辑器。"""
+
+    changed = Signal()
+    nested_steps_edit_requested = Signal(str, list)
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        initial: dict[str, Any],
+        compound_library: dict[str, dict[str, Any]] | None = None,
+        allow_compound: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(self._style_sheet())
+        self.action_data: dict[str, Any] | None = None
+        self._initial = dict(initial)
+        self._compound_library = dict(compound_library or {})
+        self._allow_compound = allow_compound
+        self._field_widgets: dict[str, QWidget] = {}
+        self._active_specs: dict[str, ParamSpec] = {}
+        self._build_ui()
+        self._load_initial()
+        self._wire_form_changes()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+        title_label = card_title("编辑动作")
+        layout.addWidget(title_label)
+        form, container = self._build_type_section()
+        layout.addLayout(form)
+        layout.addWidget(container)
+        layout.addStretch(1)
+
+    @staticmethod
+    def _style_sheet() -> str:
+        return (
+            "\n" + _s.PANEL_BASE_QSS + "            QLabel {\n"
+            "                color: #193331;\n"
+            "            }\n"
+            + _s.CARD_TITLE_QSS
+            + _s.MESSAGE_BOX_QSS
+            + _s.COMMON_CONTROLS_QSS
+            + "        "
+        )
+
+    def _configure_steps_field(self, widget: QWidget) -> None:
+        if isinstance(widget, _ActionStepsField):
+            widget.set_edit_handler(self._handle_nested_steps_edit)
+
+    def _handle_nested_steps_edit(
+        self,
+        key: str,
+        steps: list[dict[str, Any]],
+    ) -> None:
+        self.nested_steps_edit_requested.emit(key, steps)
+
+    def _on_form_changed(self, *_args: Any) -> None:
+        self._wire_form_changes()
+        self.changed.emit()
+
+    def _wire_form_changes(self) -> None:
+        for widget in [self.type_combo, *self._field_widgets.values()]:
+            if widget.property("_free_form_change_wired"):
+                continue
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._on_form_changed)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._on_form_changed)
+            elif isinstance(widget, QCheckBox):
+                widget.stateChanged.connect(self._on_form_changed)
+            elif isinstance(widget, _ActionStepsField):
+                widget.changed.connect(self._on_form_changed)
+            else:
+                continue
+            widget.setProperty("_free_form_change_wired", True)
+
+    def load_data(self, data: dict[str, Any]) -> None:
+        self._initial = dict(data)
+        self._load_initial()
+        self._wire_form_changes()
+
+class _ActionListMixin:
+    """动作列表编辑器共享的步骤列表逻辑（mixin；不是控件）。
+
+    具体类必须提供 ``_steps`` 和 ``steps_list`` QListWidget 属性。
+    """
+
+    def load_steps(self, steps: list[dict[str, Any]]) -> None:
+        self._steps = deep_copy(steps) if isinstance(steps, list) else []
+        self._refresh_steps()
+
+    def get_steps(self) -> list[dict[str, Any]]:
+        return deep_copy(self._steps)
+
+    def _refresh_steps(self) -> None:
+        self.steps_list.clear()
+        for index, data in enumerate(self._steps, start=1):
+            description = describe_action(str(data.get("type", "")), data)
+            item = QListWidgetItem(f"{index}. {description}")
+            item.setData(Qt.ItemDataRole.UserRole, index - 1)
+            self.steps_list.addItem(item)
+
+    def _remove_step(self) -> None:
+        row = self.steps_list.currentRow()
+        if row < 0 or row >= len(self._steps):
+            return
+        del self._steps[row]
+        self._refresh_steps()
+
+class ActionListEditorWidget(QWidget, _ActionListMixin):
+    """if 分支使用的扁平原始动作列表的可内嵌编辑器。"""
+
+    add_step_requested = Signal()
+    edit_step_requested = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None, title: str = "步骤") -> None:
+        super().__init__(parent)
+        self._steps: list[dict[str, Any]] = []
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title_label = card_title(title)
+        add_button = outline_button("添加步骤", object_name="settingsTestButton")
+        edit_button = outline_button("编辑步骤", object_name="settingsTestButton")
+        remove_button = danger_button("删除步骤", minimum_width=None)
+        add_button.clicked.connect(self._add_step)
+        edit_button.clicked.connect(self._edit_step)
+        remove_button.clicked.connect(self._remove_step)
+        header.addWidget(title_label)
+        header.addStretch(1)
+        for button in (add_button, edit_button, remove_button):
+            header.addWidget(button)
+        layout.addLayout(header)
+
+        self.steps_list = QListWidget()
+        self.steps_list.setObjectName("settingsTaskList")
+        self.steps_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.steps_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.steps_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.steps_list.model().rowsMoved.connect(self._sync_steps_from_list)
+        self.steps_list.itemDoubleClicked.connect(lambda _item: self._edit_step())
+        layout.addWidget(self.steps_list, 1)
+        self._refresh_steps()
+
+    def _sync_steps_from_list(self) -> None:
+        new_order: list[dict[str, Any]] = []
+        for i in range(self.steps_list.count()):
+            item = self.steps_list.item(i)
+            if item is None:
+                continue
+            source_index = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(source_index, int) and 0 <= source_index < len(self._steps):
+                new_order.append(self._steps[source_index])
+        if len(new_order) == len(self._steps):
+            self._steps = new_order
+            self.steps_list.blockSignals(True)
+            for i in range(self.steps_list.count()):
+                item = self.steps_list.item(i)
+                if item is not None:
+                    item.setData(Qt.ItemDataRole.UserRole, i)
+            self.steps_list.blockSignals(False)
+
+    def _add_step(self) -> None:
+        self.add_step_requested.emit()
+
+    def _edit_step(self) -> None:
+        row = self.steps_list.currentRow()
+        if row < 0 or row >= len(self._steps):
+            return
+        self.edit_step_requested.emit(row)

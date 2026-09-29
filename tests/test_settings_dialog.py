@@ -8,11 +8,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from free_app.ocr_models import DownloadCancelled
-from free_app.settings_dialog import (
+from free_app.ui_common import SettingsComboBox
+from free_app.ui_settings import (
     ModelDownloadWorker,
-    SettingsComboBox,
     SettingsDialog,
-    _build_confirm_message_box,
 )
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
@@ -77,7 +76,7 @@ class SettingsDialogTests(unittest.TestCase):
                     lambda *args, received=received: received.append(args)
                 )
                 with patch(
-                    "free_app.settings_dialog.download_model", side_effect=error
+                    "free_app.ui_settings.download_model", side_effect=error
                 ):
                     worker.run()
 
@@ -113,7 +112,7 @@ class SettingsDialogTests(unittest.TestCase):
             base = Path(directory)
             dialog = self._make_dialog(base)
             try:
-                with patch("free_app.settings_dialog.QMessageBox.warning") as warning:
+                with patch("free_app.ui_settings.QMessageBox.warning") as warning:
                     dialog._test_ocr()
 
                 warning.assert_called_once()
@@ -127,17 +126,17 @@ class SettingsDialogTests(unittest.TestCase):
             try:
                 with (
                     patch(
-                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        "free_app.ui_settings.OnnxOcrClient.models_ready",
                         return_value=True,
                     ),
                     patch(
-                        "free_app.settings_dialog.QFileDialog.getOpenFileName",
+                        "free_app.ui_settings.QFileDialog.getOpenFileName",
                         return_value=(str(base / "missing.png"), "PNG"),
                     ),
                     patch.object(
                         Path, "read_bytes", side_effect=OSError("image unavailable")
                     ),
-                    patch("free_app.settings_dialog.QMessageBox.warning") as warning,
+                    patch("free_app.ui_settings.QMessageBox.warning") as warning,
                 ):
                     image, source = dialog._capture_test_image()
 
@@ -158,7 +157,7 @@ class SettingsDialogTests(unittest.TestCase):
                 dialog.ocr_test_finished.connect(lambda: finished.append(True))
                 with (
                     patch(
-                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        "free_app.ui_settings.OnnxOcrClient.models_ready",
                         return_value=True,
                     ),
                     patch.object(
@@ -167,7 +166,7 @@ class SettingsDialogTests(unittest.TestCase):
                         return_value=(b"image-data", "测试图片"),
                     ),
                     patch(
-                        "free_app.settings_dialog.OnnxOcrClient.recognize",
+                        "free_app.ui_settings.OnnxOcrClient.recognize",
                         return_value=["你好", "世界"],
                     ),
                 ):
@@ -195,7 +194,7 @@ class SettingsDialogTests(unittest.TestCase):
                 dialog.ocr_test_finished.connect(lambda: finished.append(True))
                 with (
                     patch(
-                        "free_app.settings_dialog.OnnxOcrClient.models_ready",
+                        "free_app.ui_settings.OnnxOcrClient.models_ready",
                         return_value=True,
                     ),
                     patch.object(
@@ -204,7 +203,7 @@ class SettingsDialogTests(unittest.TestCase):
                         return_value=(b"image-data", "测试图片"),
                     ),
                     patch(
-                        "free_app.settings_dialog.OnnxOcrClient.recognize",
+                        "free_app.ui_settings.OnnxOcrClient.recognize",
                         side_effect=RuntimeError("模型推理失败"),
                     ),
                 ):
@@ -229,7 +228,7 @@ class SettingsDialogTests(unittest.TestCase):
                 controller = MagicMock()
                 controller.list_instances.return_value = {0: "0", 2: "Work"}
                 with patch(
-                    "free_app.settings_dialog.MuMuController", return_value=controller
+                    "free_app.ui_settings.MuMuController", return_value=controller
                 ):
                     dialog._refresh_mumu_instances()
                     dialog.wait_background_tasks()
@@ -254,7 +253,7 @@ class SettingsDialogTests(unittest.TestCase):
             dialog = self._make_dialog(base)
             try:
                 with patch(
-                    "free_app.settings_dialog.MuMuController",
+                    "free_app.ui_settings.MuMuController",
                     side_effect=ValueError("unexpected"),
                 ):
                     dialog._refresh_mumu_instances()
@@ -274,11 +273,11 @@ class SettingsDialogTests(unittest.TestCase):
             try:
                 with (
                     patch(
-                        "free_app.settings_dialog.send_run_notification",
+                        "free_app.ui_settings.send_run_notification",
                         return_value=True,
                     ) as send,
                     patch(
-                        "free_app.settings_dialog.QMessageBox.information"
+                        "free_app.ui_settings.QMessageBox.information"
                     ) as information,
                 ):
                     dialog._send_test_email()
@@ -290,10 +289,10 @@ class SettingsDialogTests(unittest.TestCase):
 
                 with (
                     patch(
-                        "free_app.settings_dialog.send_run_notification",
+                        "free_app.ui_settings.send_run_notification",
                         return_value=False,
                     ),
-                    patch("free_app.settings_dialog.QMessageBox.warning") as warning,
+                    patch("free_app.ui_settings.QMessageBox.warning") as warning,
                 ):
                     dialog._send_test_email()
                     dialog.wait_background_tasks()
@@ -484,9 +483,9 @@ class SettingsDialogTests(unittest.TestCase):
             try:
                 dialog.cleanup_mode_combo.setCurrentIndex(1)
                 with (
-                    patch("free_app.settings_dialog.confirm_dialog", return_value=True),
+                    patch("free_app.ui_settings.confirm_dialog", return_value=True),
                     patch(
-                        "free_app.settings_dialog.QMessageBox.information"
+                        "free_app.ui_settings.QMessageBox.information"
                     ) as information,
                 ):
                     dialog._clear_output_files("logs")
@@ -505,7 +504,7 @@ class SettingsDialogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             dialog = self._make_dialog(base)
-            with patch("free_app.settings_dialog.QMessageBox.question") as question:
+            with patch("free_app.ui_settings.QMessageBox.question") as question:
                 dialog.reject()
             question.assert_not_called()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
@@ -547,13 +546,6 @@ class SettingsDialogTests(unittest.TestCase):
             self.assertEqual(dialog.result(), 0)
             dialog.deleteLater()
 
-    def test_confirm_message_box_buttons_cancel_left_confirm_right(self) -> None:
-        message_box = _build_confirm_message_box(None, "标题", "内容")
-        self.assertEqual(
-            [button.text() for button in message_box.buttons()],
-            ["取消", "确认"],
-        )
-
     def test_delete_model_uses_confirm_dialog_and_aborts_on_cancel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -565,9 +557,9 @@ class SettingsDialogTests(unittest.TestCase):
             dialog = self._make_dialog(base)
             with (
                 patch(
-                    "free_app.settings_dialog.confirm_dialog", return_value=False
+                    "free_app.ui_settings.confirm_dialog", return_value=False
                 ) as confirm,
-                patch("free_app.settings_dialog.delete_model") as delete,
+                patch("free_app.ui_settings.delete_model") as delete,
             ):
                 dialog._delete_model("PP-OCRv6_small_rec")
             confirm.assert_called_once()
@@ -594,9 +586,9 @@ class SettingsDialogTests(unittest.TestCase):
                 return root / name
 
             with (
-                patch("free_app.settings_dialog.confirm_dialog", return_value=True),
-                patch("free_app.settings_dialog.delete_model", side_effect=fake_delete),
-                patch("free_app.settings_dialog.QMessageBox.information"),
+                patch("free_app.ui_settings.confirm_dialog", return_value=True),
+                patch("free_app.ui_settings.delete_model", side_effect=fake_delete),
+                patch("free_app.ui_settings.QMessageBox.information"),
             ):
                 dialog._delete_model("PP-OCRv6_small_det")
 
@@ -626,9 +618,9 @@ class SettingsDialogTests(unittest.TestCase):
                 return root / name
 
             with (
-                patch("free_app.settings_dialog.confirm_dialog", return_value=True),
-                patch("free_app.settings_dialog.delete_model", side_effect=fake_delete),
-                patch("free_app.settings_dialog.QMessageBox.information"),
+                patch("free_app.ui_settings.confirm_dialog", return_value=True),
+                patch("free_app.ui_settings.delete_model", side_effect=fake_delete),
+                patch("free_app.ui_settings.QMessageBox.information"),
             ):
                 dialog._delete_model("PP-OCRv6_small_det")
 
@@ -959,7 +951,7 @@ class SettingsDialogTests(unittest.TestCase):
         worker = ModelDownloadWorker(
             "PP-OCRv6_small_det", Path("models"), "huggingface"
         )
-        with patch("free_app.settings_dialog.download_model") as download:
+        with patch("free_app.ui_settings.download_model") as download:
             worker.run()
         download.assert_called_once()
         self.assertEqual(download.call_args.kwargs["source"], "huggingface")

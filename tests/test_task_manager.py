@@ -6,12 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from free_app.action_editor_dialogs import ActionEditorWidget
 from free_app.config import expand_action_for_run
-from free_app.message_box import QMessageBox
-from free_app.task_manager import TaskManagerWidget
-from free_app.task_viewers import UiTreeDumpWidget
-from free_app.ui_automation import Bounds, UiNode, UiSnapshot
+from free_app.device_ui import Bounds, UiNode, UiSnapshot
+from free_app.ui_common import QMessageBox
+from free_app.ui_task_manager import (
+    ActionEditorWidget,
+    TaskManagerWidget,
+    UiTreeDumpWidget,
+)
 from PySide6.QtWidgets import QApplication
 
 
@@ -125,7 +127,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.task_id_edit.setText("new")
                 dialog.task_name_edit.setText("New")
                 with patch(
-                    "free_app.task_manager.remove_path",
+                    "free_app.ui_task_manager.remove_path",
                     side_effect=lambda item, mode: item.unlink(),
                 ) as recycle:
                     dialog._save_task()
@@ -182,7 +184,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.task_name_edit.setText("Demo")
                 dialog.task_package_edit.setText("demo.package")
                 dialog._actions_buffer = [{"type": "wait", "seconds": 1}]
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     dialog._save_task()
                 warning.assert_called_once()
                 self.assertIn("已存在", warning.call_args.args[2])
@@ -208,7 +210,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.task_name_edit.setText("Demo 2")
                 dialog.task_package_edit.setText("demo.package")
                 dialog._actions_buffer = [{"type": "wait", "seconds": 1}]
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     dialog._save_task()
                 warning.assert_not_called()
                 task_path = base / "config" / "tasks" / "demo2.json"
@@ -235,8 +237,8 @@ class TaskEditorTests(unittest.TestCase):
             dialog = self._make_widget(base)
             try:
                 with (
-                    patch("free_app.task_manager.confirm_dialog", return_value=True),
-                    patch("free_app.task_manager.remove_path") as recycle,
+                    patch("free_app.ui_task_manager.confirm_dialog", return_value=True),
+                    patch("free_app.ui_task_manager.remove_path") as recycle,
                 ):
                     dialog._delete_task()
                 recycle.assert_called_once_with(task_path, "recycle")
@@ -260,7 +262,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 permanent_index = dialog.cleanup_mode_combo.findData("permanent")
                 dialog.cleanup_mode_combo.setCurrentIndex(permanent_index)
-                with patch("free_app.task_manager.confirm_dialog", return_value=True):
+                with patch("free_app.ui_task_manager.confirm_dialog", return_value=True):
                     dialog._delete_task()
                 self.assertFalse(task_path.exists())
                 self.assertNotIn("demo", dialog._tasks)
@@ -287,7 +289,7 @@ class TaskEditorTests(unittest.TestCase):
                     "params": [],
                     "steps": [{"type": "wait", "seconds": 1}],
                 }
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     dialog._save_compound(data)
                 warning.assert_not_called()
                 action_path = base / "config" / "actions" / "demo_action.json"
@@ -296,7 +298,7 @@ class TaskEditorTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_action_editor_offers_primitive_presets(self) -> None:
+    def test_action_editor_offers_atomic_presets(self) -> None:
         QApplication.instance() or QApplication([])
         dialog = ActionEditorWidget(None, {}, {})
         try:
@@ -344,7 +346,7 @@ class TaskEditorTests(unittest.TestCase):
         QApplication.instance() or QApplication([])
         dialog = ActionEditorWidget(None, {"type": "click", "locate": "coordinate"}, {})
         try:
-            with patch("free_app.action_editor_dialogs.QMessageBox.warning") as warning:
+            with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                 data = dialog.collect()
             warning.assert_called_once()
             self.assertIsNone(data)
@@ -616,7 +618,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.task_name_edit.setText("A changed")
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="cancel",
                 ):
                     dialog.task_list.setCurrentRow(1)
@@ -649,7 +651,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog._embedded.original = {"type": "click"}
                 dialog.embedded_action_editor.load_data({"type": "wait", "seconds": 3})
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="cancel",
                 ):
                     self.assertTrue(dialog.go_back())
@@ -683,7 +685,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog._embedded.original = {"type": "click"}
                 dialog.embedded_action_editor.load_data({"type": "wait", "seconds": 3})
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="discard",
                 ):
                     self.assertTrue(dialog.go_back())
@@ -710,7 +712,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.task_name_edit.setText("changed")
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="cancel",
                 ):
                     self.assertTrue(dialog.go_back())
@@ -735,7 +737,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.task_name_edit.setText("changed")
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="discard",
                 ):
                     self.assertFalse(dialog.go_back())
@@ -763,7 +765,7 @@ class TaskEditorTests(unittest.TestCase):
             try:
                 dialog.task_id_edit.setText("new")
                 with patch(
-                    "free_app.task_manager.remove_path",
+                    "free_app.ui_task_manager.remove_path",
                     side_effect=lambda item, mode: item.unlink(),
                 ):
                     self.assertTrue(dialog._save_task())
@@ -809,7 +811,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.left_tabs.setCurrentIndex(1)
                 dialog.compound_name_edit.setText("new")
                 with patch(
-                    "free_app.task_manager.remove_path",
+                    "free_app.ui_task_manager.remove_path",
                     side_effect=lambda item, mode: item.unlink(),
                 ):
                     self.assertTrue(dialog._save_compound_from_editor())
@@ -1047,7 +1049,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog._edit_action()
                 dialog.embedded_action_editor._field_widgets["seconds"].setText("5")
                 with patch(
-                    "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                    "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                     return_value="save",
                 ):
                     self.assertTrue(dialog.go_back())
@@ -1081,10 +1083,10 @@ class TaskEditorTests(unittest.TestCase):
                 dialog.embedded_action_editor._field_widgets["seconds"].setText("abc")
                 with (
                     patch(
-                        "free_app.task_manager.TaskManagerWidget._ask_unsaved_changes",
+                        "free_app.ui_task_manager.TaskManagerWidget._ask_unsaved_changes",
                         return_value="save",
                     ),
-                    patch("free_app.task_manager.QMessageBox.warning") as warning,
+                    patch("free_app.ui_task_manager.QMessageBox.warning") as warning,
                 ):
                     self.assertTrue(dialog.go_back())
                 warning.assert_called_once()
@@ -1197,7 +1199,7 @@ class TaskEditorTests(unittest.TestCase):
                 dialog._actions_buffer = [{"type": "wait", "seconds": 1}]
                 emitted = []
                 dialog.tasks_changed.connect(lambda: emitted.append(True))
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     dialog._save_task()
                 warning.assert_not_called()
                 self.assertEqual(emitted, [True])
@@ -1220,7 +1222,7 @@ class TaskEditorTests(unittest.TestCase):
             action_path.write_text(json.dumps(original), encoding="utf-8")
             dialog = self._make_widget(base)
             try:
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     dialog._save_compound(
                         {
                             "name": "existing",
@@ -1260,7 +1262,7 @@ class TaskEditorTests(unittest.TestCase):
                 self.assertEqual(dialog.compound_name_edit.text(), "old")
                 dialog.compound_name_edit.setText("new")
                 with patch(
-                    "free_app.task_manager.remove_path",
+                    "free_app.ui_task_manager.remove_path",
                     side_effect=lambda item, mode: item.unlink(),
                 ) as recycle:
                     dialog._save_compound_from_editor()
@@ -1434,7 +1436,7 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
             base = Path(directory)
             manager = self._make_widget(base)
             try:
-                with patch("free_app.task_manager.QMessageBox.warning") as warning:
+                with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                     manager._on_embedded_ui_tree_try_click_requested(10, 20, "")
                 warning.assert_called_once()
             finally:

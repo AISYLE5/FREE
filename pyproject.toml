@@ -25,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-free = "free_app.main:main"
+free = "free_app.ui_main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["free_app"]
@@ -52,9 +52,10 @@ cache_dir = "cache/mypy"
 # same dynamic attributes produce inside data-driven lambdas) only.
 [[tool.mypy.overrides]]
 module = [
-    "free_app.action_editor_dialogs",
-    "free_app.settings_dialog",
-    "free_app.task_manager",
+    "free_app.ui_common",
+    "free_app.ui_main",
+    "free_app.ui_settings",
+    "free_app.ui_task_manager",
 ]
 disable_error_code = ["attr-defined", "has-type"]
 

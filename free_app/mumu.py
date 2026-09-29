@@ -293,6 +293,10 @@ def shutdown_mumu_app(
 
     与 :func:`shutdown_mumu` 相互独立：后者只关闭配置的模拟器实例，
     本函数则退出桌面程序。
+
+    ``main close`` 没有实例概念，会带走 MuMu 内的**全部**实例。
+    因此退出前先检查是否有本流程之外的实例在运行：有则跳过退出，
+    避免误伤用户手动开启或其它流程正在使用的实例。
     """
 
     log = noop_log(log_callback)
@@ -301,6 +305,14 @@ def shutdown_mumu_app(
 
     try:
         controller = _mumu_controller(settings)
+        vmindex = str(settings.get("mumu_vm_index", 0))
+        others = _other_running_instances(controller, vmindex, log)
+        if others:
+            log(
+                f"检测到其它 MuMu 实例仍在运行（{others}），"
+                f"跳过退出 MuMu 软件程序以免误关"
+            )
+            return False
         log("任务结束，退出 MuMu 软件程序")
         controller.close_main()
         log("已请求退出 MuMu 软件程序")
@@ -308,6 +320,38 @@ def shutdown_mumu_app(
     except (MuMuError, OSError, TypeError, ValueError) as exc:
         log(f"退出 MuMu 软件程序失败: {exc}")
         return False
+
+
+def _other_running_instances(
+    controller: MuMuController,
+    vmindex: str,
+    log: LogCallback,
+) -> list[str]:
+    """返回除 ``vmindex`` 外仍在运行的实例描述；查询失败时返回空列表。
+
+    查询失败不阻断退出流程：拿不到实例列表时保持原有行为，
+    否则一次 CLI 抖动就会让「跑完关程序」永久失效。
+    """
+
+    try:
+        instances = controller.list_instances()
+    except (MuMuError, OSError, TypeError, ValueError, AttributeError) as exc:
+        log(f"读取 MuMu 实例列表失败，按无其它实例处理: {exc}")
+        return []
+
+    others: list[str] = []
+    for index in sorted(instances):
+        if str(index) == str(vmindex):
+            continue
+        try:
+            info = controller.instance_info(str(index))
+        except (MuMuError, OSError, TypeError, ValueError, AttributeError) as exc:
+            log(f"读取 MuMu 实例 {index} 状态失败，按运行中处理: {exc}")
+            others.append(f"{index}(状态未知)")
+            continue
+        if isinstance(info, dict) and info.get("is_process_started"):
+            others.append(f"{index}({instances[index]})")
+    return others
 
 
 def prepare_device(

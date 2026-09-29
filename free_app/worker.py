@@ -12,6 +12,7 @@ from .app_lifecycle import cleanup_apps
 from .config import TaskFileError, resolve_path
 from .engine import AutomationEngine
 from .helpers import LogCallback, ProgressCallback
+from .lock import InstanceLock
 from .models import BatchRunResult, RunResult, RunStatus, TaskDefinition
 from .mumu import (
     MuMuStopRequested,
@@ -22,8 +23,8 @@ from .mumu import (
 )
 from .notifications import send_run_notification
 from .onnx_ocr import OnnxOcrClient, build_ocr_client
-from .pruning import prune_files
 from .task_runner import run_task_executions, task_execution_count
+from .trash import prune_files
 
 
 def _build_engine(
@@ -68,6 +69,30 @@ def reconnect_device(
     except Exception as exc:
         log_callback(f"ADB 设备重连异常: {exc}")
     return False
+
+
+def _fatal_device_error(message: str) -> bool:
+    """判断错误信息是否属于不可能靠重试恢复的设备级故障。
+
+    实例被外部关闭、设备掉线或 ADB 通道断开时，重试只会重复失败：
+    日志事故中 10 次尝试全部在「准备连接设备」阶段空转。命中这些
+    特征时提前结束重试，把真实原因留给调用方。
+    """
+
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "device offline",
+            "device not found",
+            "no devices",
+            "当前状态为 offline",
+            "未返回动态 adb 地址",
+            "等待 mumu 动态 adb 地址超时",
+            "等待 mumu adb 设备超时",
+            "adb 设备未上线",
+        )
+    )
 
 
 def _run_engine_attempt(
@@ -153,6 +178,28 @@ class _WorkerBase(QObject):
         self.config_errors = tuple(config_errors)
         self.base_directory = base_directory or Path.cwd()
         self._stop_requested = Event()
+        self._instance_lock: InstanceLock | None = None
+        self._lock_acquired = False
+
+    def _acquire_instance_lock(self) -> None:
+        """获取 ``mumu_vm_index`` 的进程级独占锁。
+
+        同一实例被另一个 FREE 进程占用时抛出 :class:`LockError`，
+        让本进程在启动模拟器之前就退出，而不是两个进程互相踩踏：
+        先结束的进程会关掉实例，后一个进程随即整批任务失败。
+        """
+
+        vmindex = str(self.settings.get("mumu_vm_index", 0))
+        lock = InstanceLock(vmindex)
+        lock.acquire(self.log_message.emit)
+        self._instance_lock = lock
+        self._lock_acquired = True
+
+    def _release_instance_lock(self) -> None:
+        if self._instance_lock is not None:
+            self._instance_lock.release()
+            self._instance_lock = None
+        self._lock_acquired = False
 
     def _finish_with(
         self,
@@ -227,6 +274,7 @@ class TaskWorker(_WorkerBase):
                     self.log_message.emit,
                 )
             else:
+                self._acquire_instance_lock()
                 prepare_device(
                     self.engine.adb,
                     self.settings,
@@ -258,6 +306,10 @@ class TaskWorker(_WorkerBase):
         finally:
             if self.debug:
                 self.log_message.emit("调试模式：跳过 App 清理与 MuMu 关闭")
+            elif not self._lock_acquired:
+                # 没拿到实例锁说明另一个进程正在使用该实例，
+                # 此时关闭实例/程序会直接踩踏对方，必须跳过。
+                self.log_message.emit("未持有实例锁，跳过 App 清理与 MuMu 关闭")
             elif prepared:
                 _cleanup_apps_quietly(
                     self.engine.adb, self.settings, [self.task], self.log_message.emit
@@ -267,6 +319,7 @@ class TaskWorker(_WorkerBase):
                 # 后续的连接超时或设备校验失败时，MuMu 可能已经启动，
                 # 因此关闭流程仍需执行。
                 _shutdown_all(self.settings, self.log_message.emit)
+            self._release_instance_lock()
         if result is None:
             result = RunResult.failed(
                 self.task.id,
@@ -339,6 +392,7 @@ class BatchTaskWorker(_WorkerBase):
         setup_error: str | None = None
         stop_during_setup = False
         try:
+            self._acquire_instance_lock()
             prepare_device(
                 self.adb,
                 self.settings,
@@ -380,6 +434,7 @@ class BatchTaskWorker(_WorkerBase):
                             self.log_message.emit,
                         ),
                         stop_event=self._stop_requested,
+                        fatal_error_predicate=_fatal_device_error,
                     )
                 except Exception as exc:
                     self.log_message.emit(f"任务执行异常: {exc}")
@@ -404,7 +459,13 @@ class BatchTaskWorker(_WorkerBase):
             setup_error = str(exc)
             self.log_message.emit(f"批量任务准备失败: {exc}")
         finally:
-            _shutdown_all(self.settings, self.log_message.emit)
+            if not self._lock_acquired:
+                # 未持有实例锁：另一个进程正在使用该实例，
+                # 关闭它会把对方正在跑的任务一起搞垮。
+                self.log_message.emit("未持有实例锁，跳过 MuMu 关闭")
+            else:
+                _shutdown_all(self.settings, self.log_message.emit)
+            self._release_instance_lock()
 
         # 准备阶段失败/停止且一个任务都没跑：为第一个任务补发结果，
         # 保证 task_started/task_finished/finished 的次序与正常流程一致。

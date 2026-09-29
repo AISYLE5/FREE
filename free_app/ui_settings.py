@@ -1,3 +1,14 @@
+"""设置页与设置对话框（含 OCR 模型下载）。
+
+``SettingsPage``：设置页面外壳（页头 + 内容区）。
+``SettingsDialog``：MuMu/ADB 路径、执行与清理、重试、OCR 模型选择与下载、
+SMTP 邮件的分页设置；``_FieldBinding`` 一张表驱动控件的读写与收集，保存经
+``config.update_settings()`` 单点读-改-写。
+``ModelDownloadWorker``：后台下载 OCR 模型。
+
+界面层另外三个模块：``ui_common.py`` / ``ui_main.py`` / ``ui_task_manager.py``。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -7,12 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import QObject, QPoint, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFontMetrics, QIntValidator, QPainter, QPen
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
-    QApplication,
     QButtonGroup,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -22,17 +31,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from . import styles as _s
 from .background_task import BackgroundTaskOwner
 from .config import (
     DEFAULT_CLEANUP_MODE,
@@ -50,7 +56,6 @@ from .config import (
     update_settings,
 )
 from .constants import DEFAULT_MUMU_DIRECTORY
-from .message_box import QMessageBox, confirm
 from .models import RunResult, RunStatus, TaskDefinition
 from .mumu import (
     MuMuController,
@@ -74,16 +79,77 @@ from .ocr_models import (
     model_root,
 )
 from .onnx_ocr import OnnxOcrClient
-from .pruning import clear_output_files
+from .trash import clear_output_files
+from .ui_common import (
+    CARD_TITLE_QSS,
+    COMMON_CONTROLS_QSS,
+    MESSAGE_BOX_QSS,
+    OCR_FEEDBACK_QSS,
+    OUTLINE_COMBO_WIDTH,
+    PAGE_BASE_QSS,
+    SCROLLBAR_QSS,
+    WIDE_BUTTON_MIN_WIDTH,
+    ElidedLabel,
+    ExecutionCountComboBox,
+    ModelRowCard,
+    QMessageBox,
+    SettingsComboBox,
+    card_title,
+    confirm_dialog,
+    danger_button,
+    dialog_action_row,
+    expanding,
+    mount_scrollable_page,
+    outline_button,
+    page_header,
+    scrollable_page,
+)
 
-# 对话框本地的默认值：与 config 公共默认值同源的已改为直接引用；
-# 这里只留设置文件不涉及（OCR 模型选择、执行次数下拉初值）的条目。
+# 页面内容区边距：与任务管理页的页头左右留白保持一致。
+CONTENT_MARGINS = (28, 22, 28, 22)
+CONTENT_SPACING = 14
+
+class SettingsPage(QWidget):
+    """设置页面外壳；内嵌对话框由窗口惰性创建后挂进来。"""
+
+    def __init__(self, on_back: Callable[[], None]) -> None:
+        super().__init__()
+        self.setObjectName("appRoot")
+        self.content_layout = QVBoxLayout(self)
+        self.content_layout.setContentsMargins(*CONTENT_MARGINS)
+        self.content_layout.setSpacing(CONTENT_SPACING)
+        header, self.back_button = page_header("设置", on_back)
+        self.content_layout.addLayout(header)
+        self.setStyleSheet(PAGE_BASE_QSS)
+
+    def add_dialog(self, dialog: SettingsDialog) -> None:
+        """把内嵌设置对话框挂进页面内容区。"""
+
+        self.content_layout.addWidget(dialog)
+
+def create_embedded_dialog(
+    settings_path: Path, parent: QWidget, base_directory: Path
+) -> SettingsDialog:
+    """按"嵌入式控件"方式创建设置对话框。"""
+
+    dialog = SettingsDialog(
+        settings_path,
+        parent,
+        base_directory=base_directory,
+        embedded=True,
+    )
+    dialog.setWindowFlags(Qt.WindowType.Widget)
+    return dialog
+
 _DEFAULT_TASK_EXECUTION_COUNT = 1
+
 _DEFAULT_DET_MODEL = "PP-OCRv6_small_det"
+
 _DEFAULT_REC_MODEL = "PP-OCRv6_small_rec"
 
+OUTPUT_CLEAR_BUTTON_MIN_WIDTH = 118
 
-@dataclass(frozen=True)
+@dataclass
 class _FieldBinding:
     """一项可编辑设置与其控件的绑定。
 
@@ -97,7 +163,6 @@ class _FieldBinding:
     stored: Callable[[dict[str, Any]], Any]
     write: Callable[[SettingsDialog, Any], None] | None = None
 
-
 def _normalize_recipients(value: object) -> list[str]:
     """把收件人取值（列表或以 ``;``/`,``,`` 分隔的文本）规范化为去空白后的条目列表。"""
     if isinstance(value, str):
@@ -106,9 +171,6 @@ def _normalize_recipients(value: object) -> list[str]:
         return []
     return [str(item).strip() for item in value if str(item).strip()]
 
-
-# 顶层设置字段（email 块、执行次数表、实例编号与 OCR 模型选择是特殊字段，
-# 由各自的专用逻辑处理）。
 _TOP_LEVEL_FIELDS: tuple[_FieldBinding, ...] = (
     _FieldBinding(
         "close_mumu_after_run",
@@ -176,7 +238,6 @@ _TOP_LEVEL_FIELDS: tuple[_FieldBinding, ...] = (
     ),
 )
 
-# email_notification 块字段。
 _EMAIL_FIELDS: tuple[_FieldBinding, ...] = (
     _FieldBinding(
         "enabled",
@@ -238,216 +299,6 @@ _EMAIL_FIELDS: tuple[_FieldBinding, ...] = (
     ),
 )
 
-
-class ElidedLabel(QLabel):
-    """用省略号代替截断来显示过长文本的 QLabel。"""
-
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self._full_text = text
-
-    def setText(self, text: str) -> None:
-        """保存完整（未省略）文本，供下次 resize 时据此重新省略。"""
-        self._full_text = str(text)
-        super().setText(text)
-
-    def minimumSizeHint(self) -> QSize:
-        hint = super().minimumSizeHint()
-        return QSize(80, hint.height())
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        metrics = QFontMetrics(self.font())
-        # 调用基类 setText，确保完整文本不会被
-        # 省略显示的文本覆盖。
-        QLabel.setText(
-            self,
-            metrics.elidedText(
-                self._full_text, Qt.TextElideMode.ElideRight, max(1, self.width())
-            ),
-        )
-
-
-class ModelRowCard(QFrame):
-    """可点击的模型行卡片；任意左键点击都会发出携带模型名的 ``clicked`` 信号。"""
-
-    clicked = Signal(str)
-
-    def __init__(self, model_name: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._model_name = model_name
-
-    def mouseReleaseEvent(self, event) -> None:
-        super().mouseReleaseEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self._model_name)
-
-
-class SettingsComboBox(QComboBox):
-    """统一下拉框：使用自绘弹层，滚轮不切换选项。"""
-
-    class _PopupFrame(QFrame):
-        """半透明弹层，圆角边框只绘制一次。"""
-
-        def paintEvent(self, event) -> None:
-            del event
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(QColor("#b9d3ca"), 1.0))
-            painter.setBrush(QColor("#ffffff"))
-            # 把描边控制在窗口内部，让半透明圆角保持透明，
-            # 不会多出一个矩形边框。
-            painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 7, 7)
-
-    _POPUP_STYLE = _s.COMBO_POPUP_QSS
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._settings_popup: QFrame | None = None
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(
-            QPen(
-                QColor("#49615f"),
-                1.6,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin,
-            )
-        )
-        center_x = self.width() - 16
-        center_y = self.height() // 2
-        painter.drawLine(center_x - 4, center_y - 2, center_x, center_y + 2)
-        painter.drawLine(center_x, center_y + 2, center_x + 4, center_y - 2)
-
-    def showPopup(self) -> None:
-        self.hidePopup()
-        popup = self._PopupFrame(
-            self,
-            Qt.WindowType.Popup
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.NoDropShadowWindowHint,
-        )
-        popup.setObjectName("settingsComboPopup")
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        popup.setAutoFillBackground(False)
-        popup.setStyleSheet(self._POPUP_STYLE)
-        popup_layout = QVBoxLayout(popup)
-        # 列表两侧保留相同的视觉留白；
-        # 右侧多出的 1px 还避免滚动条贴到边框。
-        popup_layout.setContentsMargins(5, 5, 6, 5)
-        popup_layout.setSpacing(0)
-        option_list = QListWidget(popup)
-        option_list.setObjectName("settingsComboPopupList")
-        option_list.setFrameShape(QFrame.Shape.NoFrame)
-        option_list.setLineWidth(0)
-        option_list.setMidLineWidth(0)
-        option_list.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        option_list.viewport().setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground, True
-        )
-        option_list.setAutoFillBackground(False)
-        option_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        option_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # 11 行 34px（0–10）正好组成一个完整的弹层。只有更长的
-        # 列表才应变为可滚动；否则最后一项会被裁掉。
-        has_overflow = self.count() > 11
-        option_list.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-            if has_overflow
-            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        for index in range(self.count()):
-            item = QListWidgetItem(self.itemText(index))
-            item.setData(Qt.ItemDataRole.UserRole, index)
-            item.setSizeHint(QSize(0, 34))
-            model_item = self.model().item(index)
-            if model_item is not None and not model_item.isEnabled():
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            option_list.addItem(item)
-        option_list.setCurrentRow(max(0, self.currentIndex()))
-        option_list.itemClicked.connect(self._accept_popup_item)
-        option_list.itemActivated.connect(self._accept_popup_item)
-        option_list.setFixedHeight(
-            max(34, self.count() * 34) if not has_overflow else 350
-        )
-        popup_layout.addWidget(option_list)
-        # 让弹层的每条边都与所属下拉框精确对齐。最小弹层宽度
-        # 会让较短的控件意外地向右侧变宽。
-        popup.setFixedWidth(max(1, self.width()))
-        popup.setFixedHeight(option_list.height() + 10)
-        origin = self.mapToGlobal(QPoint(0, 0))
-        below = QPoint(origin.x(), origin.y() + self.height())
-        screen = QApplication.screenAt(origin) or QApplication.primaryScreen()
-        popup_position = below
-        if screen is not None:
-            available = screen.availableGeometry()
-            parent_window = self.window()
-            if parent_window is not None and parent_window.isVisible():
-                # 通知必须保持在当前应用程序窗口内，
-                # 而不是仅位于物理显示器内。
-                available = available.intersected(parent_window.frameGeometry())
-            x = max(
-                available.left(), min(below.x(), available.right() - popup.width() + 1)
-            )
-            popup_height = popup.height()
-            below_y = below.y()
-            above_y = origin.y() - popup_height
-            if below_y + popup_height <= available.bottom() + 1:
-                y = below_y
-            elif above_y >= available.top():
-                y = above_y
-            else:
-                # 即使两侧空间都不足，也要让弹层完整可见
-                # （例如在较低或缩放过的显示器上）。
-                y = max(available.top(), available.bottom() - popup_height + 1)
-            popup_position = QPoint(x, y)
-        popup.move(popup_position)
-        self._settings_popup = popup
-        popup.show()
-        # Qt.Popup 显示过程中 Windows 可能自行调整位置；
-        # 因此在显示后再应用一次计算好的窗口内位置。
-        popup.move(popup_position)
-        option_list.setFocus()
-
-    def hidePopup(self) -> None:
-        popup = self._settings_popup
-        self._settings_popup = None
-        if popup is not None:
-            popup.close()
-            popup.deleteLater()
-
-    def _accept_popup_item(self, item: QListWidgetItem) -> None:
-        index = item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(index, int) and 0 <= index < self.count():
-            self.setCurrentIndex(index)
-            self.activated.emit(index)
-        self.hidePopup()
-
-    def wheelEvent(self, event) -> None:
-        event.ignore()
-
-
-class ExecutionCountComboBox(SettingsComboBox):
-    """选择任务在“执行全部”批量运行中执行次数的下拉框。"""
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        for count in range(11):
-            self.addItem(f"{count} 次", count)
-        self.setValue(1)
-
-    def value(self) -> int:
-        return int(self.currentData())
-
-    def setValue(self, value: int) -> None:
-        index = self.findData(min(10, max(0, int(value))))
-        self.setCurrentIndex(max(0, index))
-
-
 class ModelDownloadWorker(QObject):
     """在后台线程下载 OCR 模型。"""
 
@@ -484,28 +335,6 @@ class ModelDownloadWorker(QObject):
             self.failed.emit(self.name, str(exc))
         else:
             self.succeeded.emit(self.name)
-
-
-def _build_confirm_message_box(
-    parent: QWidget | None, title: str, text: str
-) -> QMessageBox:
-    message_box = QMessageBox(parent)
-    message_box.setWindowTitle(title)
-    message_box.setText(text)
-    cancel_button = message_box.addButton("取消", QMessageBox.ButtonRole.NoRole)
-    confirm_button = message_box.addButton("确认", QMessageBox.ButtonRole.NoRole)
-    cancel_button.setObjectName("messageBoxAction")
-    confirm_button.setObjectName("messageBoxAction")
-    message_box.setDefaultButton(confirm_button)
-    message_box.setStyleSheet(_s.MESSAGE_BOX_QSS)
-    return message_box
-
-
-def confirm_dialog(parent: QWidget | None, title: str, text: str) -> bool:
-    """显示取消在左、确认在右的确认框。"""
-
-    return confirm(parent, title, text)
-
 
 class SettingsDialog(BackgroundTaskOwner, QDialog):
     log_message = Signal(str)
@@ -594,21 +423,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
 
         footer = QFrame()
         footer.setObjectName("settingsFooter")
-        action_row = QHBoxLayout(footer)
-        action_row.setContentsMargins(0, 14, 0, 0)
-        action_row.setSpacing(10)
-        action_row.addStretch(1)
-
-        cancel_button = QPushButton("取消")
-        cancel_button.setObjectName("settingsCancelButton")
-        cancel_button.clicked.connect(self.reject)
-
-        save_button = QPushButton("保存")
-        save_button.setObjectName("settingsSaveButton")
-        save_button.setDefault(True)
-        save_button.clicked.connect(self._save)
-        action_row.addWidget(cancel_button)
-        action_row.addWidget(save_button)
+        # 底栏「取消 / 保存」的布局与按钮统一由 ui_common 提供。
+        dialog_action_row(footer, self.reject, self._save)
         root.addWidget(footer)
         self.setStyleSheet(self._style_sheet())
         self._relayout_model_sections()
@@ -657,10 +473,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         combo = SettingsComboBox()
         combo.addItem("开", True)
         combo.addItem("关", False)
-        combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        # 表单里的下拉框统一「横向吃满、纵向按 QSS 高度」。
+        expanding(combo)
         setattr(self, attr, combo)
         return combo
 
@@ -675,12 +489,14 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         page.setContentsMargins(20, 20, 20, 20)
         page.setSpacing(18)
 
-        self.test_button = QPushButton("发送测试邮件")
-        self.test_button.setObjectName("settingsTestButton")
         # 在文字之外预留余量，避免标签在缩放显示
         # 分辨率下被裁切（完全贴合文字的按钮按下时
         # 若最后一两个字被截断会显得变形）。
-        self.test_button.setMinimumWidth(120)
+        self.test_button = outline_button(
+            "发送测试邮件",
+            object_name="settingsTestButton",
+            minimum_width=WIDE_BUTTON_MIN_WIDTH,
+        )
         self.test_button.clicked.connect(self._send_test_email)
 
         heading_row = QHBoxLayout()
@@ -700,10 +516,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.smtp_security = SettingsComboBox()
         self.smtp_security.addItem("SSL", "ssl")
         self.smtp_security.addItem("STARTTLS", "starttls")
-        self.smtp_security.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        # 表单里的下拉框统一「横向吃满、纵向按 QSS 高度」。
+        expanding(self.smtp_security)
         self.smtp_security.currentIndexChanged.connect(self._sync_security_port)
         form.addRow("安全方式", self.smtp_security)
 
@@ -726,18 +540,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         return container
 
     def _build_run_page(self) -> QWidget:
-        container = QFrame()
-        container.setObjectName("settingsTabPage")
-        page = QVBoxLayout(container)
-        page.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(18)
+        container, page, scroll, content, content_layout = scrollable_page()
         content_layout.addWidget(self._build_page_heading("运行设置"))
 
         runtime_form = self._build_form_layout(24)
@@ -774,8 +577,9 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         mumu_folder_row = QHBoxLayout()
         mumu_folder_row.setSpacing(8)
         mumu_folder_row.addWidget(self.mumu_directory_edit, 1)
-        self.mumu_browse_button = QPushButton("浏览")
-        self.mumu_browse_button.setObjectName("settingsBrowseButton")
+        self.mumu_browse_button = outline_button(
+            "浏览", object_name="settingsBrowseButton"
+        )
         self.mumu_browse_button.clicked.connect(self._browse_mumu_directory)
         mumu_folder_row.addWidget(self.mumu_browse_button)
         runtime_form.addRow("模拟器文件夹", mumu_folder_row)
@@ -788,8 +592,9 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.mumu_vm_index_combo = SettingsComboBox()
         self.mumu_vm_index_combo.setMinimumWidth(180)
         instance_row.addWidget(self.mumu_vm_index_combo, 1)
-        self.mumu_refresh_button = QPushButton("刷新实例")
-        self.mumu_refresh_button.setObjectName("settingsBrowseButton")
+        self.mumu_refresh_button = outline_button(
+            "刷新实例", object_name="settingsBrowseButton"
+        )
         self.mumu_refresh_button.clicked.connect(self._refresh_mumu_instances)
         instance_row.addWidget(self.mumu_refresh_button)
         runtime_form.addRow("模拟器实例编号", instance_row)
@@ -797,21 +602,19 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.cleanup_mode_combo = SettingsComboBox()
         self.cleanup_mode_combo.addItem("删除至回收站", "recycle")
         self.cleanup_mode_combo.addItem("永久删除", "permanent")
-        self.cleanup_mode_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        # 表单里的下拉框统一「横向吃满、纵向按 QSS 高度」。
+        expanding(self.cleanup_mode_combo)
         runtime_form.addRow("删除方式", self.cleanup_mode_combo)
 
         cleanup_row = QHBoxLayout()
         cleanup_row.setSpacing(8)
-        self.clear_logs_button = QPushButton("清理全部日志")
-        self.clear_logs_button.setObjectName("dangerButton")
-        self.clear_logs_button.setMinimumWidth(118)
+        self.clear_logs_button = danger_button(
+            "清理全部日志", minimum_width=OUTPUT_CLEAR_BUTTON_MIN_WIDTH
+        )
         self.clear_logs_button.clicked.connect(lambda: self._clear_output_files("logs"))
-        self.clear_screenshots_button = QPushButton("清理全部截图")
-        self.clear_screenshots_button.setObjectName("dangerButton")
-        self.clear_screenshots_button.setMinimumWidth(118)
+        self.clear_screenshots_button = danger_button(
+            "清理全部截图", minimum_width=OUTPUT_CLEAR_BUTTON_MIN_WIDTH
+        )
         self.clear_screenshots_button.clicked.connect(
             lambda: self._clear_output_files("screenshots")
         )
@@ -822,26 +625,11 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         settings_card = self._build_option_card(None, runtime_form)
         content_layout.addWidget(settings_card)
         content_layout.addStretch(1)
-        scroll.setWidget(content)
-        scroll.viewport().setAutoFillBackground(False)
-        content.setAutoFillBackground(False)
-        scroll.viewport().setAutoFillBackground(False)
-        page.addWidget(scroll)
+        mount_scrollable_page(page, scroll, content)
         return container
 
     def _build_retry_page(self) -> QWidget:
-        container = QFrame()
-        container.setObjectName("settingsTabPage")
-        page = QVBoxLayout(container)
-        page.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(18)
+        container, page, scroll, content, content_layout = scrollable_page()
         content_layout.addWidget(self._build_page_heading("执行次数"))
 
         retry_card = QFrame()
@@ -858,9 +646,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
 
             name_label = QLabel(task.name)
             name_label.setObjectName("settingsRunLabel")
-            name_label.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-            )
+            expanding(name_label, vertical="preferred")
             row_layout.addWidget(name_label, 1)
 
             id_label = QLabel(task.id)
@@ -875,25 +661,11 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
 
         content_layout.addWidget(retry_card)
         content_layout.addStretch(1)
-        scroll.setWidget(content)
-        scroll.viewport().setAutoFillBackground(False)
-        content.setAutoFillBackground(False)
-        page.addWidget(scroll)
+        mount_scrollable_page(page, scroll, content)
         return container
 
     def _build_ocr_page(self) -> QWidget:
-        container = QFrame()
-        container.setObjectName("settingsTabPage")
-        page = QVBoxLayout(container)
-        page.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        ocr_layout = QVBoxLayout(content)
-        ocr_layout.setContentsMargins(20, 20, 20, 20)
-        ocr_layout.setSpacing(18)
+        container, page, scroll, content, ocr_layout = scrollable_page()
         ocr_header = QHBoxLayout()
         ocr_header.setSpacing(4)
         ocr_header.addWidget(self._build_page_heading("OCR 模型"))
@@ -904,17 +676,19 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.download_source_combo.addItem("自动", AUTO_SOURCE)
         for key in SOURCE_KEYS:
             self.download_source_combo.addItem(MODEL_SOURCES[key]["label"], key)
-        self.download_source_combo.setFixedWidth(130)
+        self.download_source_combo.setFixedWidth(OUTLINE_COMBO_WIDTH)
         ocr_header.addWidget(source_label)
         ocr_header.addWidget(self.download_source_combo)
         self.ocr_feedback_label = QLabel("")
         self.ocr_feedback_label.setObjectName("settingsOcrFeedback")
         ocr_header.addWidget(self.ocr_feedback_label)
-        self.test_ocr_button = QPushButton("测试识别")
-        self.test_ocr_button.setObjectName("settingsTestButton")
+        self.test_ocr_button = outline_button(
+            "测试识别", object_name="settingsTestButton"
+        )
         self.test_ocr_button.clicked.connect(self._test_ocr)
-        self.refresh_ocr_button = QPushButton("刷新")
-        self.refresh_ocr_button.setObjectName("settingsTestButton")
+        self.refresh_ocr_button = outline_button(
+            "刷新", object_name="settingsTestButton"
+        )
         self.refresh_ocr_button.clicked.connect(self._refresh_model_status)
         ocr_header.addWidget(self.test_ocr_button)
         ocr_header.addWidget(self.refresh_ocr_button)
@@ -931,10 +705,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self._model_sections_stacked: bool | None = None
         ocr_layout.addLayout(self._model_sections_layout)
         ocr_layout.addStretch(1)
-        scroll.setWidget(content)
-        scroll.viewport().setAutoFillBackground(False)
-        content.setAutoFillBackground(False)
-        page.addWidget(scroll)
+        mount_scrollable_page(page, scroll, content)
         return container
 
     def resizeEvent(self, event) -> None:
@@ -975,8 +746,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(12)
-        title_label = QLabel(title)
-        title_label.setObjectName("settingsSectionTitle")
+        title_label = card_title(title, object_name="settingsSectionTitle")
         title_row.addWidget(title_label)
         title_row.addStretch(1)
         if note:
@@ -998,8 +768,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         heading = QWidget()
         layout = QHBoxLayout(heading)
         layout.setContentsMargins(0, 0, 0, 0)
-        title_label = QLabel(title)
-        title_label.setObjectName("settingsCardTitle")
+        title_label = card_title(title)
         layout.addWidget(title_label)
         layout.addStretch(1)
         return heading
@@ -1011,8 +780,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setObjectName("settingsGroupTitle")
+        title_label = card_title(title, object_name="settingsGroupTitle")
         layout.addWidget(title_label)
 
         group = QButtonGroup(self)
@@ -1052,8 +820,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         )
         row.addWidget(size_label)
 
-        action_button = QPushButton("下载")
-        action_button.setObjectName("settingsModelAction")
+        # 模型卡上的"下载/取消"按钮：沿用既有 objectName 的次要按钮。
+        action_button = outline_button("下载", object_name="settingsModelAction")
         action_button.clicked.connect(
             lambda _checked=False, n=name: self._toggle_model_action(n)
         )
@@ -1787,7 +1555,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "                color: #758986;\n"
             "                font-size: 11px;\n"
             "            }\n"
-            + _s.CARD_TITLE_QSS
+            + CARD_TITLE_QSS
             + "            QLabel#settingsGroupTitle {\n"
             "                color: #244340;\n"
             "                font-size: 13px;\n"
@@ -1830,7 +1598,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "                border-radius: 8px;\n"
             "                background: #138277;\n"
             "            }\n"
-            + _s.OCR_FEEDBACK_QSS
+            + OCR_FEEDBACK_QSS
             + "            QLabel#settingsModelSize { color: #718783; font-size: 12px; min-width: 62px; }\n"
             "            QPushButton#settingsModelAction {\n"
             "                min-height: 32px;\n"
@@ -1842,8 +1610,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "                background: #f0f5f3;\n"
             "                border-color: #dbe8e4;\n"
             "            }\n"
-            + _s.MESSAGE_BOX_QSS
-            + _s.SCROLLBAR_QSS
-            + _s.COMMON_CONTROLS_QSS
+            + MESSAGE_BOX_QSS
+            + SCROLLBAR_QSS
+            + COMMON_CONTROLS_QSS
             + "        "
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from free_app.action_editor_dialogs import (
+from free_app.ui_task_manager import (
     ActionEditorWidget,
     ActionListEditorWidget,
 )
@@ -15,7 +15,7 @@ class ActionEditorWidgetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.application = QApplication.instance() or QApplication([])
 
-    def test_collect_drops_unknown_primitive_keys(self) -> None:
+    def test_collect_drops_unknown_atomic_keys(self) -> None:
         dialog = ActionEditorWidget(
             None,
             {"type": "wait", "seconds": 2, "unknown_key": "x"},
@@ -36,7 +36,7 @@ class ActionEditorWidgetTests(unittest.TestCase):
             {},
         )
         try:
-            with patch("free_app.action_editor_dialogs.QMessageBox.warning") as warning:
+            with patch("free_app.ui_task_manager.QMessageBox.warning") as warning:
                 self.assertIsNone(dialog.collect())
             warning.assert_called_once()
         finally:
@@ -59,7 +59,7 @@ class ActionEditorWidgetTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_action_editor_offers_detect_and_if_primitives(self) -> None:
+    def test_action_editor_offers_detect_and_if_atomics(self) -> None:
         dialog = ActionEditorWidget(
             None,
             {},

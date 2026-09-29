@@ -1,3 +1,10 @@
+"""设备侧的 UI 层级解析（非界面代码）。
+
+把 ``adb uiautomator dump`` 得到的 XML 解析成 :class:`UiSnapshot` / :class:`UiNode`
+（含 bounds 中心点计算），并提供精确/模糊两种文本匹配。这里不依赖 Qt——
+界面层是 ``ui_main`` / ``ui_settings`` / ``ui_task_manager`` / ``ui_common``。
+"""
+
 from __future__ import annotations
 
 import re

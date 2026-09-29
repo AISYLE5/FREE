@@ -155,7 +155,7 @@ def load_task_directory(
     必须存在，且至少包含一个可用任务，否则抛出异常。
 
     ``actions_directory``（默认 ``config/actions``）中的复合动作会在加载时
-    展开为原语动作。
+    展开为原子动作。
     """
 
     tasks, errors, _raw = load_task_directory_raw(
@@ -287,7 +287,7 @@ def _expand_action(
     variables: dict[str, Any],
     stack: tuple[str, ...],
 ) -> tuple[list[Action], str | None]:
-    """把一个动作展开为原语动作。
+    """把一个动作展开为原子动作。
 
     复合动作引用递归解析，带循环引用检测与 ``${param}`` 替换。
     返回 ``(actions, error)``。
@@ -339,7 +339,7 @@ def expand_action_for_run(
 ) -> tuple[list[Action], str | None]:
     """为单次运行解析占位符并递归展开一个动作。
 
-    返回可直接交给引擎的原语动作，或一条错误信息。
+    返回可直接交给引擎的原子动作，或一条错误信息。
     """
 
     variables = variables or {}

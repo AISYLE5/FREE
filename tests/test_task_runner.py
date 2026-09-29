@@ -292,6 +292,82 @@ class TaskRunnerTests(unittest.TestCase):
         self.assertEqual(result.status, RunStatus.SUCCESS)
         self.assertEqual(run_attempt.call_count, 2)
 
+    def test_run_task_executions_skips_retry_on_fatal_device_error(self) -> None:
+        """设备掉线类故障不重试：重试只会耗尽次数并掩盖真实原因。"""
+
+        run_attempt = MagicMock(
+            return_value=make_result(
+                RunStatus.FAILED, "设备 127.0.0.1:16416 当前状态为 offline"
+            )
+        )
+        cleanup = MagicMock()
+        reconnect = MagicMock()
+        logs: list[str] = []
+
+        def fatal(message: str) -> bool:
+            return "offline" in message
+
+        result = run_task_executions(
+            make_task(),
+            run_attempt,
+            2,
+            logs.append,
+            cleanup_callback=cleanup,
+            reconnect_callback=reconnect,
+            fatal_error_predicate=fatal,
+        )
+
+        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertEqual(run_attempt.call_count, 1)
+        cleanup.assert_not_called()
+        reconnect.assert_not_called()
+        self.assertTrue(any("检测到设备级故障" in message for message in logs), logs)
+
+    def test_run_task_executions_retries_when_error_is_not_fatal(self) -> None:
+        run_attempt = MagicMock(
+            side_effect=[
+                make_result(RunStatus.FAILED, "UI 未找到可点击目标"),
+                make_result(RunStatus.SUCCESS),
+            ]
+        )
+        logs: list[str] = []
+
+        def fatal(message: str) -> bool:
+            return "offline" in message
+
+        result = run_task_executions(
+            make_task(),
+            run_attempt,
+            2,
+            logs.append,
+            fatal_error_predicate=fatal,
+        )
+
+        self.assertEqual(result.status, RunStatus.SUCCESS)
+        self.assertEqual(run_attempt.call_count, 2)
+
+    def test_run_task_executions_retries_when_error_is_empty(self) -> None:
+        """没有错误信息时不应触发致命判定。"""
+
+        run_attempt = MagicMock(
+            side_effect=[
+                make_result(RunStatus.FAILED),
+                make_result(RunStatus.SUCCESS),
+            ]
+        )
+        fatal = MagicMock(return_value=True)
+
+        result = run_task_executions(
+            make_task(),
+            run_attempt,
+            2,
+            MagicMock(),
+            fatal_error_predicate=fatal,
+        )
+
+        self.assertEqual(result.status, RunStatus.SUCCESS)
+        fatal.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,6 +116,18 @@ class ConfigTests(unittest.TestCase):
         exp_types = [action.type for action in task_by_id["bilibili_exp"].actions]
         for expected in ("detect", "click", "if", "wait", "back", "capture_screenshot"):
             self.assertIn(expected, exp_types)
+        # 会员入口按钮文案会随营销横幅在「大会员中心 / 会员中心」间轮换，
+        # 两个 B 站任务都必须按资源 id 定位，避免再被文案变化打挂。
+        for task_id in ("bilibili_exp", "bilibili_pts"):
+            member_click = next(
+                action
+                for action in task_by_id[task_id].actions
+                if action.type == "click"
+                and action.parameters.get("resource_id")
+                == "tv.danmaku.bili:id/mine_vip_layout_refactoring"
+            )
+            self.assertEqual(member_click.parameters["target"], "resource_id")
+            self.assertNotIn("texts", member_click.parameters)
         raw_pts = (
             Path(__file__).resolve().parents[1]
             / "config"
@@ -125,12 +137,27 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("swipe_until", raw_pts)
         self.assertNotIn("loop_until", raw_pts)
         share = task_by_id["bilibili_share"]
+        # 第 3 步前先上滑一屏：底部推荐卡片原本被导航栏遮挡，点击会落到「会员购」。
+        swipe_action = next(
+            action for action in share.actions if action.type == "swipe"
+        )
+        self.assertEqual(
+            (
+                swipe_action.parameters["x1"],
+                swipe_action.parameters["y1"],
+                swipe_action.parameters["x2"],
+                swipe_action.parameters["y2"],
+            ),
+            (540, 1600, 540, 1200),
+        )
+        swipe_index = share.actions.index(swipe_action)
         video_click = next(
             action
             for action in share.actions
             if action.type == "click" and action.parameters.get("texts") == ["视频,%"]
         )
         self.assertEqual(video_click.parameters["match_mode"], "fuzzy")
+        self.assertLess(swipe_index, share.actions.index(video_click))
         share_click = next(
             action
             for action in share.actions
@@ -647,7 +674,7 @@ class ConfigTests(unittest.TestCase):
             [action.type for action in task.actions],
         )
 
-    def test_shipped_action_library_steps_are_valid_primitives(self) -> None:
+    def test_shipped_action_library_steps_are_valid_atomics(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
         for path in sorted((project_root / "config" / "actions").glob("*.json")):

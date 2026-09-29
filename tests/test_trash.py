@@ -6,11 +6,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from free_app.pruning import clear_output_files, prune_files
-from free_app.trash import TrashError, send_to_recycle_bin
+from free_app.trash import (
+    TrashError,
+    clear_output_files,
+    prune_files,
+    send_to_recycle_bin,
+)
 
 
-class PruningTests(unittest.TestCase):
+class TrashTests(unittest.TestCase):
     def test_permanent_removes_oldest_beyond_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
@@ -44,7 +48,7 @@ class PruningTests(unittest.TestCase):
             def fake_trash(path: Path, mode: str) -> None:
                 path.unlink()
 
-            with patch("free_app.pruning.remove_path", side_effect=fake_trash) as trash:
+            with patch("free_app.trash.remove_path", side_effect=fake_trash) as trash:
                 removed = prune_files(target, 2, "recycle")
 
             self.assertEqual(removed, 2)
@@ -87,7 +91,7 @@ class PruningTests(unittest.TestCase):
                 path.unlink()
 
             with patch(
-                "free_app.pruning.remove_path",
+                "free_app.trash.remove_path",
                 side_effect=failing_trash,
             ):
                 removed = prune_files(target, 1, "recycle", logs.append)
@@ -136,7 +140,7 @@ class PruningTests(unittest.TestCase):
                 path.unlink()
 
             with patch(
-                "free_app.pruning.remove_path",
+                "free_app.trash.remove_path",
                 side_effect=fake_trash,
             ) as trash:
                 removed = clear_output_files(target, "recycle")
@@ -164,7 +168,7 @@ class PruningTests(unittest.TestCase):
                 path.unlink()
 
             with patch(
-                "free_app.pruning.remove_path",
+                "free_app.trash.remove_path",
                 side_effect=failing_trash,
             ):
                 removed = clear_output_files(target, "recycle", logs.append)

@@ -1917,7 +1917,8 @@ class EngineTests(unittest.TestCase):
                 bounds="[100,100][200,150]" />
           <node text="我的" enabled="true" clickable="true" visible-to-user="true"
                 bounds="[100,100][200,150]" />
-          <node text="大会员中心" enabled="true" clickable="true" visible-to-user="true"
+          <node resource-id="tv.danmaku.bili:id/mine_vip_layout_refactoring"
+                enabled="true" clickable="true" visible-to-user="true"
                 bounds="[100,100][200,150]" />
           <node text="签到" enabled="true" clickable="true" visible-to-user="true"
                 bounds="[100,100][200,150]" />

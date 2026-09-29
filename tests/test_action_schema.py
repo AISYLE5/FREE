@@ -183,7 +183,7 @@ class ActionSchemaTests(unittest.TestCase):
             ["swipe 不支持参数: stale_param"],
         )
 
-    def test_retries_is_a_native_parameter_for_all_primitives(self) -> None:
+    def test_retries_is_a_native_parameter_for_all_atomics(self) -> None:
         self.assertEqual(
             validate_action_params(
                 "detect",
@@ -682,7 +682,7 @@ class ActionSchemaTests(unittest.TestCase):
             ),
         )
 
-    def test_describe_action_covers_remaining_primitive_types(self) -> None:
+    def test_describe_action_covers_remaining_atomic_types(self) -> None:
         self.assertIn(
             "state == 领取", describe_action("if", {"var": "state", "equals": "领取"})
         )

@@ -10,9 +10,9 @@ from unittest.mock import MagicMock, patch
 
 from free_app.adb import Device
 from free_app.config import load_json
-from free_app.main_window import MainWindow
 from free_app.models import BatchRunResult, RunResult, RunStatus
-from free_app.settings_dialog import SettingsDialog
+from free_app.ui_main import MainWindow
+from free_app.ui_settings import SettingsDialog
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
@@ -88,7 +88,7 @@ class MainWindowTests(unittest.TestCase):
                 window._open_task_manager()
                 window._task_manager_widget.task_name_edit.setText("changed")
                 with patch(
-                    "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
+                    "free_app.ui_main.MainWindow._confirm_exit_with_unsaved_manager_changes",
                     return_value=False,
                 ) as confirm:
                     event = QCloseEvent()
@@ -193,7 +193,7 @@ class MainWindowTests(unittest.TestCase):
                 with (
                     patch.object(window, "_make_adb", return_value=ready_adb),
                     patch(
-                        "free_app.main_window.mumu_adb_address_from_settings",
+                        "free_app.ui_main.mumu_adb_address_from_settings",
                         return_value=address,
                     ),
                 ):
@@ -206,7 +206,7 @@ class MainWindowTests(unittest.TestCase):
                 with (
                     patch.object(window, "_make_adb", return_value=missing_adb),
                     patch(
-                        "free_app.main_window.mumu_adb_address_from_settings",
+                        "free_app.ui_main.mumu_adb_address_from_settings",
                         return_value=address,
                     ),
                 ):
@@ -269,9 +269,9 @@ class MainWindowTests(unittest.TestCase):
                 task = window.tasks[0]
                 with (
                     patch.object(window, "_make_adb", return_value=object()),
-                    patch("free_app.main_window.QThread", FakeThread),
+                    patch("free_app.ui_main.QThread", FakeThread),
                     patch(
-                        "free_app.main_window.TaskWorker", return_value=worker
+                        "free_app.ui_main.TaskWorker", return_value=worker
                     ) as worker_class,
                 ):
                     self.assertTrue(window._prepare_run([task]))
@@ -280,11 +280,11 @@ class MainWindowTests(unittest.TestCase):
                 worker.moveToThread.assert_called_once_with(window.worker_thread)
                 self.assertTrue(window.worker_thread.started_called)
                 self.assertFalse(window.task_list.isEnabled())
-                self.assertEqual(window.status_label.property("state"), "running")
+                self.assertIn("运行中", window.statusBar().currentMessage())
 
                 window._stop_task()
                 worker.stop.assert_called_once()
-                self.assertEqual(window.status_label.property("state"), "stopped")
+                self.assertIn("正在停止", window.statusBar().currentMessage())
 
                 with patch.object(window, "_update_device_status"):
                     window._thread_finished()
@@ -336,9 +336,9 @@ class MainWindowTests(unittest.TestCase):
                 task = window.tasks[0]
                 with (
                     patch.object(window, "_make_adb", return_value=object()),
-                    patch("free_app.main_window.QThread", FakeThread),
+                    patch("free_app.ui_main.QThread", FakeThread),
                     patch(
-                        "free_app.main_window.TaskWorker", return_value=worker
+                        "free_app.ui_main.TaskWorker", return_value=worker
                     ) as worker_class,
                 ):
                     self.assertTrue(
@@ -387,7 +387,6 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.task_states[first.id], RunStatus.SUCCESS.value)
                 self.assertEqual(window.task_states[second.id], "skipped")
                 self.assertEqual(window.task_results[first.id], first_result)
-                self.assertEqual(window.overall_progress.value(), 1)
             finally:
                 window.close()
                 window.deleteLater()
@@ -410,8 +409,14 @@ class MainWindowTests(unittest.TestCase):
                     RunResult(second.id, RunStatus.SUCCESS, 1, 1)
                 )
 
-                self.assertEqual(window.overall_progress.value(), 2)
-                self.assertEqual(window.overall_count_label.text(), "全部任务 2 / 2")
+                # 进度控件已移除：批量完成的计数与结果仍要如实累计。
+                self.assertEqual(window.task_executions_done, 2)
+                self.assertEqual(
+                    set(window.task_results), {first.id, second.id}
+                )
+                self.assertEqual(
+                    window.task_states[first.id], RunStatus.SUCCESS.value
+                )
             finally:
                 window.close()
                 window.deleteLater()
@@ -487,7 +492,7 @@ class MainWindowTests(unittest.TestCase):
                     "{", encoding="utf-8"
                 )
                 with (
-                    patch("free_app.main_window.QMessageBox.warning") as warning,
+                    patch("free_app.ui_main.QMessageBox.warning") as warning,
                     patch.object(window, "_refresh_device") as device_refresh,
                 ):
                     window._refresh_all()
@@ -617,7 +622,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(
                     window.task_manager_copy_package_button.text(), "获取包名"
                 )
-                with patch("free_app.main_window.QToolTip.showText") as tooltip:
+                with patch("free_app.ui_task_manager.QToolTip.showText") as tooltip:
                     window._show_task_manager_feedback("tv.danmaku.bili")
                 self.assertEqual(tooltip.call_args.args[1], "tv.danmaku.bili")
                 self.assertLess(
@@ -662,7 +667,7 @@ class MainWindowTests(unittest.TestCase):
                 )
             finally:
                 with patch(
-                    "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
+                    "free_app.ui_main.MainWindow._confirm_exit_with_unsaved_manager_changes",
                     return_value=True,
                 ):
                     window.close()
@@ -695,7 +700,7 @@ class MainWindowTests(unittest.TestCase):
                 )
             finally:
                 with patch(
-                    "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
+                    "free_app.ui_main.MainWindow._confirm_exit_with_unsaved_manager_changes",
                     return_value=True,
                 ):
                     window.close()
@@ -731,7 +736,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(task.actions[0].parameters["texts"], ["测试群"])
             finally:
                 with patch(
-                    "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
+                    "free_app.ui_main.MainWindow._confirm_exit_with_unsaved_manager_changes",
                     return_value=True,
                 ):
                     window.close()
@@ -762,7 +767,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(task.actions[0].parameters["wait_seconds"], 7)
             finally:
                 with patch(
-                    "free_app.main_window.MainWindow._confirm_exit_with_unsaved_manager_changes",
+                    "free_app.ui_main.MainWindow._confirm_exit_with_unsaved_manager_changes",
                     return_value=True,
                 ):
                     window.close()

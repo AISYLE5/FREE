@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from free_app.ui_automation import UiSnapshot, parse_bounds
+from free_app.device_ui import UiSnapshot, parse_bounds
 
 
-class UiAutomationTests(unittest.TestCase):
+class DeviceUiTests(unittest.TestCase):
     def test_parse_bounds_and_find_disabled_node(self) -> None:
         self.assertEqual(parse_bounds("[10,20][110,80]").center, (60, 50))
         snapshot = UiSnapshot.from_xml(

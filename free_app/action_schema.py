@@ -8,8 +8,8 @@ from typing import Any
 # 复合动作库目录名（相对 config/）
 ACTIONS_DIRECTORY_NAME = "actions"
 
-# 原语动作类型（引擎直接执行的最小动作）
-PRIMITIVE_TYPES = (
+# 原子动作类型（引擎直接执行的最小动作；复合动作在加载期展开为它们）
+ATOMIC_TYPES = (
     "launch",
     "stop",
     "wait",
@@ -22,7 +22,7 @@ PRIMITIVE_TYPES = (
     "loop_until",
     "capture_screenshot",
 )
-PRIMITIVE_TYPE_SET = set(PRIMITIVE_TYPES)
+ATOMIC_TYPE_SET = set(ATOMIC_TYPES)
 
 COMPOUND_TYPE = "compound"
 
@@ -136,7 +136,7 @@ def _validate_nested_steps(steps: Any, label: str, errors: list[str]) -> None:
             errors.append(f"{prefix} 必须是带 type 的动作对象")
             continue
         step_type = str(step["type"]).strip()
-        if step_type not in PRIMITIVE_TYPE_SET:
+        if step_type not in ATOMIC_TYPE_SET:
             errors.append(f"{prefix} 未知动作类型: {step_type}")
             continue
         step_params = {key: value for key, value in step.items() if key != "type"}
@@ -433,7 +433,7 @@ def validate_action_params(action_type: str, params: dict[str, Any]) -> list[str
                 f"compound 不支持参数: {', '.join(str(key) for key in sorted(unknown))}"
             )
         return errors
-    if action_type not in PRIMITIVE_TYPE_SET:
+    if action_type not in ATOMIC_TYPE_SET:
         return [f"未知动作类型: {action_type}"]
 
     errors = []

@@ -29,29 +29,26 @@ python main.py
 FREE/
 ├─ free_app\                      # 核心 Python 包
 │  ├─ __init__.py                 # 包初始化
-│  ├─ action_editor_dialogs.py    # 动作/复合动作表单编辑器
-│  ├─ action_schema.py            # 动作原语规格
+│  ├─ action_schema.py            # 原子动作规格
 │  ├─ adb.py                      # ADB 命令封装
 │  ├─ app_lifecycle.py            # App 进程生命周期管理
 │  ├─ config.py                   # 配置读写
 │  ├─ constants.py                # 模拟器尺寸常量
+│  ├─ device_ui.py                # 设备侧 UI 层级解析（非界面代码）
 │  ├─ engine.py                   # 任务引擎
 │  ├─ helpers.py                  # 通用辅助函数
 │  ├─ logging_utils.py            # 日志工具
-│  ├─ main.py                     # GUI 入口
-│  ├─ main_window.py              # 主窗口界面
 │  ├─ models.py                   # 数据模型与运行状态
 │  ├─ mumu.py                     # MuMu CLI 封装
 │  ├─ notifications.py            # SMTP 通知
 │  ├─ ocr_models.py               # OCR 模型下载与管理
 │  ├─ onnx_ocr.py                 # onnxocr 封装
-│  ├─ pruning.py                  # 日志/截图清理
-│  ├─ settings_dialog.py          # 设置对话框
-│  ├─ styles.py                   # Qt/QSS 界面样式
-│  ├─ task_manager.py             # 任务与复合任务管理界面
 │  ├─ task_runner.py              # 任务执行器
-│  ├─ trash.py                    # 文件移入回收站
-│  ├─ ui_automation.py            # 界面自动化操作
+│  ├─ trash.py                    # 文件删除 / 回收站
+│  ├─ ui_common.py                # 共享样式 / 中文消息框 / 控件工厂 / 共享控件
+│  ├─ ui_main.py                  # 主页 + 主窗口容器 + GUI 入口
+│  ├─ ui_settings.py              # 设置页 + 设置对话框（含 OCR 模型下载）
+│  ├─ ui_task_manager.py          # 任务管理页 + 任务编辑器 + 查看器 + 动作表单
 │  └─ worker.py                   # Qt 工作线程任务执行
 ├─ tests\                         # 自动化测试
 ├─ config\                        # 用户配置

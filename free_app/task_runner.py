@@ -47,6 +47,7 @@ def run_task_executions(
     cleanup_callback: Callable[[], object] | None = None,
     reconnect_callback: Callable[[], object] | None = None,
     stop_event: Event | None = None,
+    fatal_error_predicate: Callable[[str], bool] | None = None,
 ) -> RunResult:
     """将任务运行最多 ``execution_count`` 次，成功即停止。
 
@@ -55,6 +56,9 @@ def run_task_executions(
     ``execution_count=1``，因此配置的执行次数不影响手动单次运行。
     每次重试前，可选的 ``reconnect_callback`` 在 ``cleanup_callback``
     之后执行，在下一次尝试前恢复已断开的网络 ADB 设备。
+
+    ``fatal_error_predicate`` 命中时不再重试：设备掉线、实例被外部
+    关闭等故障不会因等待而恢复，继续重试只会耗尽剩余尝试次数。
     """
 
     total_attempts = min(MAX_TASK_EXECUTION_COUNT, max(1, execution_count))
@@ -76,6 +80,16 @@ def run_task_executions(
         if result.status != RunStatus.FAILED or attempt >= total_attempts - 1:
             return result
         if stop_event is not None and stop_event.is_set():
+            return result
+        if (
+            fatal_error_predicate is not None
+            and result.error
+            and fatal_error_predicate(result.error)
+        ):
+            log_callback(
+                f"检测到设备级故障，不再重试剩余 "
+                f"{total_attempts - attempt_number} 次尝试: {result.error}"
+            )
             return result
 
         next_attempt = attempt + 2

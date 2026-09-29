@@ -566,7 +566,14 @@ class MumuTests(unittest.TestCase):
         controller = type(
             "ControllerStub",
             (),
-            {"close_main": lambda self: "closed"},
+            {
+                "close_main": lambda self: "closed",
+                "list_instances": lambda self: {0: "main"},
+                "instance_info": lambda self, _vmindex: {
+                    "is_process_started": False,
+                    "is_android_started": False,
+                },
+            },
         )()
         logs: list[str] = []
         with patch("free_app.mumu.MuMuController", return_value=controller):
@@ -582,6 +589,99 @@ class MumuTests(unittest.TestCase):
 
         self.assertTrue(any("退出 MuMu 软件程序" in message for message in logs))
         self.assertTrue(any("已请求退出" in message for message in logs))
+
+    def test_shutdown_mumu_app_skips_close_when_other_instance_running(self) -> None:
+        """其它实例仍在运行时不得退出主程序，否则会连带关掉它。"""
+
+        closed: list[str] = []
+        controller = type(
+            "ControllerStub",
+            (),
+            {
+                "close_main": lambda self: closed.append("closed") or "closed",
+                "list_instances": lambda self: {0: "BA", 1: "iPhone100"},
+                "instance_info": lambda self, vmindex: {
+                    "is_process_started": vmindex == "0",
+                    "is_android_started": vmindex == "0",
+                },
+            },
+        )()
+        logs: list[str] = []
+        with patch("free_app.mumu.MuMuController", return_value=controller):
+            self.assertFalse(
+                shutdown_mumu_app(
+                    {
+                        "close_mumu_app_after_run": True,
+                        "mumu_vm_index": 1,
+                        "mumu_cli_path": "C:/mumu-cli.exe",
+                    },
+                    logs.append,
+                )
+            )
+
+        self.assertEqual([], closed)
+        self.assertTrue(
+            any("跳过退出 MuMu 软件程序" in message for message in logs), logs
+        )
+
+    def test_shutdown_mumu_app_closes_when_only_own_instance_exists(self) -> None:
+        closed: list[str] = []
+        controller = type(
+            "ControllerStub",
+            (),
+            {
+                "close_main": lambda self: closed.append("closed") or "closed",
+                "list_instances": lambda self: {0: "BA", 1: "iPhone100"},
+                "instance_info": lambda self, vmindex: {
+                    "is_process_started": vmindex == "1",
+                    "is_android_started": False,
+                },
+            },
+        )()
+        logs: list[str] = []
+        with patch("free_app.mumu.MuMuController", return_value=controller):
+            self.assertTrue(
+                shutdown_mumu_app(
+                    {
+                        "close_mumu_app_after_run": True,
+                        "mumu_vm_index": 1,
+                        "mumu_cli_path": "C:/mumu-cli.exe",
+                    },
+                    logs.append,
+                )
+            )
+
+        self.assertEqual(["closed"], closed)
+
+    def test_shutdown_mumu_app_skips_when_instance_state_unknown(self) -> None:
+        """实例状态读不到时保守处理：按运行中对待，不退出主程序。"""
+
+        closed: list[str] = []
+        controller = type(
+            "ControllerStub",
+            (),
+            {
+                "close_main": lambda self: closed.append("closed") or "closed",
+                "list_instances": lambda self: {0: "BA"},
+                "instance_info": lambda self, _vmindex: (_ for _ in ()).throw(
+                    MuMuError("info failed")
+                ),
+            },
+        )()
+        logs: list[str] = []
+        with patch("free_app.mumu.MuMuController", return_value=controller):
+            self.assertFalse(
+                shutdown_mumu_app(
+                    {
+                        "close_mumu_app_after_run": True,
+                        "mumu_vm_index": 1,
+                        "mumu_cli_path": "C:/mumu-cli.exe",
+                    },
+                    logs.append,
+                )
+            )
+
+        self.assertEqual([], closed)
 
     def test_shutdown_mumu_app_logs_close_failure(self) -> None:
         controller = type(
