@@ -10,6 +10,7 @@
   "mumu_command_timeout_seconds": 10,
   "cleanup_after_task": true,
   "cleanup_delay_seconds": 5,
+  "cleanup_extra_packages": [],
   "task_order": [
     "hanserclub",
     "xiaoheihe",

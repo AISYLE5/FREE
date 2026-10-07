@@ -467,6 +467,42 @@ class SettingsDialogTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
+    def test_cleanup_extra_packages_round_trips_through_dialog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "config").mkdir()
+            settings_path = base / "config" / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {"cleanup_extra_packages": ["com.tencent.mobileqq"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            dialog = self._make_dialog(base)
+            try:
+                self.assertEqual(
+                    dialog.cleanup_extra_packages_edit.text(), "com.tencent.mobileqq"
+                )
+
+                dialog.cleanup_extra_packages_edit.setText(
+                    "com.tencent.mobileqq, com.other.app"
+                )
+                dialog._save()
+                saved = json.loads(settings_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    saved["cleanup_extra_packages"],
+                    ["com.tencent.mobileqq", "com.other.app"],
+                )
+
+                # 清空后保存应落为空列表，而不是把键整个丢掉。
+                dialog.cleanup_extra_packages_edit.clear()
+                dialog._save()
+                saved = json.loads(settings_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["cleanup_extra_packages"], [])
+            finally:
+                dialog.deleteLater()
+
     def test_clear_output_files_confirms_and_cleans_with_current_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -122,6 +122,69 @@ class AppLifecycleTests(unittest.TestCase):
         self.assertTrue(logs)
         self.assertTrue(any("任务里没有配置包名" in message for message in logs))
 
+    def test_cleanup_extra_packages_are_stopped_after_task_packages(self) -> None:
+        # QQ 分享页会残留在前台顶住下一个 App 的启动，因此允许在设置里
+        # 额外声明需要一并清理的包名。
+        adb = FakeAdb()
+        cleanup_apps(
+            adb,
+            load_sanitized(
+                {
+                    "cleanup_after_task": True,
+                    "cleanup_extra_packages": ["com.tencent.mobileqq"],
+                }
+            ),
+            _tasks("tv.danmaku.bili"),
+            sleep_function=lambda _seconds: None,
+        )
+
+        self.assertEqual(adb.stopped, ["tv.danmaku.bili", "com.tencent.mobileqq"])
+
+    def test_cleanup_extra_packages_deduplicates_and_skips_task_packages(self) -> None:
+        adb = FakeAdb()
+        cleanup_apps(
+            adb,
+            load_sanitized(
+                {
+                    "cleanup_extra_packages": [
+                        "com.tencent.mobileqq",
+                        "com.tencent.mobileqq",
+                        "tv.danmaku.bili",
+                        "",
+                    ]
+                }
+            ),
+            _tasks("tv.danmaku.bili"),
+            sleep_function=lambda _seconds: None,
+        )
+
+        self.assertEqual(adb.stopped, ["tv.danmaku.bili", "com.tencent.mobileqq"])
+
+    def test_cleanup_extra_packages_normalizes_string_and_dirty_types(self) -> None:
+        # 逗号分隔的文本写法可用；脏类型被丢弃而不是抛错。
+        for payload, expected in (
+            ("com.a, com.b", ["com.a", "com.b"]),
+            ("com.a\ncom.b", ["com.a", "com.b"]),
+            (["com.a", 123, None, "com.b"], ["com.a", "com.b"]),
+            (None, []),
+            (123, []),
+        ):
+            with self.subTest(payload=payload):
+                settings = load_sanitized({"cleanup_extra_packages": payload})
+                self.assertEqual(settings["cleanup_extra_packages"], expected)
+
+    def test_cleanup_extra_packages_alone_still_runs_cleanup(self) -> None:
+        # 任务列表为空时，仅靠附加包名也应触发清理，而不是走「没有配置包名」提前返回。
+        adb = FakeAdb()
+        cleanup_apps(
+            adb,
+            load_sanitized({"cleanup_extra_packages": ["com.tencent.mobileqq"]}),
+            [],
+            sleep_function=lambda _seconds: None,
+        )
+
+        self.assertEqual(adb.stopped, ["com.tencent.mobileqq"])
+
     def test_cleanup_logs_force_stop_failure_and_continues(self) -> None:
         class FailingAdb(FakeAdb):
             def force_stop(self, package: str) -> None:

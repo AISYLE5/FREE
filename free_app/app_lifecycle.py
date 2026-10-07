@@ -38,6 +38,25 @@ def collect_packages(tasks: Iterable[Any]) -> list[str]:
     return list(dict.fromkeys(packages))
 
 
+def cleanup_packages(settings: dict[str, Any], tasks: Iterable[Any]) -> list[str]:
+    """汇总需要清理的包名：任务引用的包 + 设置里的附加包。
+
+    设置项 ``cleanup_extra_packages`` 由清洗层保证为字符串列表；这里再做一次
+    防御性过滤，避免绕过清洗层直接调用时把非字符串喂给 ADB。
+    """
+
+    packages = collect_packages(tasks)
+    extra = settings.get("cleanup_extra_packages")
+    if isinstance(extra, (list, tuple)):
+        for candidate in extra:
+            if not isinstance(candidate, str):
+                continue
+            package = candidate.strip()
+            if package and package not in packages:
+                packages.append(package)
+    return packages
+
+
 def cleanup_apps(
     adb: AdbClient,
     settings: dict[str, Any],
@@ -51,7 +70,7 @@ def cleanup_apps(
         log("任务结束清理跳过：cleanup_after_task=False")
         return
 
-    packages = collect_packages(tasks)
+    packages = cleanup_packages(settings, tasks)
     if not packages:
         log("任务结束清理跳过：任务里没有配置包名")
         return

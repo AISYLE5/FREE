@@ -35,6 +35,7 @@ NATIVE_SETTING_KEYS = {
     "mumu_command_timeout_seconds",
     "cleanup_after_task",
     "cleanup_delay_seconds",
+    "cleanup_extra_packages",
     "task_order",
     "qq_group_name",
     "mumu_directory",
@@ -378,6 +379,29 @@ def resolve_path(value: str | None, base_directory: Path) -> Path:
     return path if path.is_absolute() else base_directory / path
 
 
+def _sanitize_packages(value: Any) -> list[str]:
+    """规范化附加清理包名列表：只保留非空字符串，去重并保持顺序。"""
+
+    if isinstance(value, str):
+        # 允许逗号/分号/换行分隔的单行写法，方便手工编辑配置。
+        # 分隔符与设置页的 _normalize_recipients 保持一致。
+        candidates: list[Any] = [
+            part for part in value.replace(";", "\n").replace(",", "\n").splitlines()
+        ]
+    elif isinstance(value, (list, tuple)):
+        candidates = list(value)
+    else:
+        return []
+    packages: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        package = candidate.strip()
+        if package and package not in packages:
+            packages.append(package)
+    return packages
+
+
 def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """清洗项目配置文件中的各项取值。"""
 
@@ -425,6 +449,11 @@ def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     sanitized["cleanup_delay_seconds"] = max(
         0,
         int(_native_number(sanitized.get("cleanup_delay_seconds"), 5, integer=True)),
+    )
+    # 任务只清理自身包名，跨任务残留的 App（例如 QQ 分享页）会顶住下一个任务
+    # 的启动，这里允许额外声明需要一并清理的包名。
+    sanitized["cleanup_extra_packages"] = _sanitize_packages(
+        sanitized.get("cleanup_extra_packages")
     )
 
     # 未配置 MuMu 安装目录时从 adb_path 推导（nx_main/shell 形态取上级目录）。

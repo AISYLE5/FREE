@@ -229,6 +229,14 @@ _TOP_LEVEL_FIELDS: tuple[_FieldBinding, ...] = (
         lambda d, v: d.qq_group_name_edit.setText(str(v)),
     ),
     _FieldBinding(
+        "cleanup_extra_packages",
+        lambda d: _normalize_recipients(d.cleanup_extra_packages_edit.text()),
+        lambda s: _normalize_recipients(s.get("cleanup_extra_packages", [])),
+        lambda d, v: d.cleanup_extra_packages_edit.setText(
+            ", ".join(str(item) for item in v)
+        ),
+    ),
+    _FieldBinding(
         "ocr_download_source",
         lambda d: d.download_source_combo.currentData(),
         lambda s: str(s.get("ocr_download_source", AUTO_SOURCE)),
@@ -586,6 +594,12 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
 
         self.qq_group_name_edit = QLineEdit()
         runtime_form.addRow("转发对象名称", self.qq_group_name_edit)
+
+        self.cleanup_extra_packages_edit = QLineEdit()
+        self.cleanup_extra_packages_edit.setPlaceholderText(
+            "可选，逗号分隔，例如 com.tencent.mobileqq"
+        )
+        runtime_form.addRow("额外清理包名", self.cleanup_extra_packages_edit)
 
         instance_row = QHBoxLayout()
         instance_row.setSpacing(8)

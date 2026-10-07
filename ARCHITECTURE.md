@@ -125,7 +125,7 @@ FREE/
 | --- | --- |
 | `worker.py` | `TaskWorker`（单任务）与 `BatchTaskWorker`（顺序批量），共同继承 `_WorkerBase`（共享停止事件、设置字段与 `_finish_with()` 收尾：通知 → 清理旧输出 → 必发 `finished`）。公共流程：`prepare_device()` → 执行任务 → `cleanup_apps()` → `shutdown_mumu()`/`shutdown_mumu_app()` → 发送邮件通知 → 清理旧输出文件。批量模式下每个任务之间做一次 App 清理，失败可重试（见 6.5）|
 | `task_runner.py` | 任务级执行控制：`task_execution_count()` 读取 `task_execution_counts[task_id]`；`run_task_executions()` 允许一个任务在同一批次内尝试最多 N 次，成功后即停，重试前按需执行 App 清理与 ADB 重连回调 |
-| `app_lifecycle.py` | 任务结束后的进程清理：按 `cleanup_packages` 列表对每个包执行 `adb force-stop`，延迟与开关均来自设置 |
+| `app_lifecycle.py` | 任务结束后的进程清理：`cleanup_packages()` 汇总任务引用的包名（`collect_packages()`，递归含嵌套动作）与设置项 `cleanup_extra_packages`，按该列表对每个包执行 `adb force-stop`，延迟与开关均来自设置。附加包名用于清理跨任务残留的 App（例如 QQ 分享页会停留在前台顶住下一个任务的启动）|
 
 ### 4.3 动作引擎
 
@@ -256,7 +256,7 @@ sequenceDiagram
 
 ### 7.1 设置文件
 
-`config/settings.json` 由模板 `settings.example.json` 首次生成。`load_settings()` 会做**白名单清洗**（`NATIVE_SETTING_KEYS` / `NATIVE_EMAIL_KEYS`）：剔除未知键、类型归一（bool/int/float）、字符串默认值回退、数值钳制（如文件上限 ≤ 1000）、`task_execution_counts` 清洗、邮件块重组、`mumu_directory` 由 `adb_path` 推导（MuMu 安装目录形态 `nx_main/adb.exe` 时取上级目录）。相对路径（`log_directory` / `screenshot_directory` / `ocr_model_directory`）由 `resolve_path()` 相对项目根目录解析。**清洗层是全项目唯一的设置文件校验边界**：所有下游消费者（worker、mumu、notifications、task_runner、app_lifecycle）直接信任清洗后的类型，不再各自做字符串转换或静默回退。
+`config/settings.json` 由模板 `settings.example.json` 首次生成。`load_settings()` 会做**白名单清洗**（`NATIVE_SETTING_KEYS` / `NATIVE_EMAIL_KEYS`）：剔除未知键、类型归一（bool/int/float）、字符串默认值回退、数值钳制（如文件上限 ≤ 1000）、`task_execution_counts` 清洗、`cleanup_extra_packages` 规范化为去重后的包名列表（兼容数组与逗号/分号分隔的文本写法）、邮件块重组、`mumu_directory` 由 `adb_path` 推导（MuMu 安装目录形态 `nx_main/adb.exe` 时取上级目录）。相对路径（`log_directory` / `screenshot_directory` / `ocr_model_directory`）由 `resolve_path()` 相对项目根目录解析。**清洗层是全项目唯一的设置文件校验边界**：所有下游消费者（worker、mumu、notifications、task_runner、app_lifecycle）直接信任清洗后的类型，不再各自做字符串转换或静默回退。
 
 ### 7.2 任务文件
 
