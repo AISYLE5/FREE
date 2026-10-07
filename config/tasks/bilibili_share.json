@@ -55,7 +55,7 @@
       "locate": "ui",
       "target": "text",
       "texts": ["${qq_group_name}"],
-      "match_mode": "exact"
+      "match_mode": "fuzzy"
     },
     {
       "type": "click",
