@@ -71,6 +71,55 @@ def reconnect_device(
     return False
 
 
+def ensure_device_ready(
+    adb: AdbClient,
+    settings: dict[str, Any],
+    log_callback: Callable[[str], None],
+    stop_event: Event | None = None,
+) -> bool:
+    """确认目标 ADB 设备在线；掉线时逐级尝试恢复，成功返回 ``True``。
+
+    恢复顺序由轻到重：先探活，再 ``adb connect`` 重连，最后重新走一遍
+    :func:`prepare_device`（按 ``auto_start_mumu`` 决定是否重启实例）。
+
+    事故背景：``prepare_device`` 在批量流程里只跑一次。外部程序（另一个
+    自动化工具结束模拟器、宿主进程被强杀）把设备打成 ``offline`` 后，
+    剩余任务会全部卡在「准备连接设备」阶段，且因命中设备级故障特征而
+    放弃重试，整批任务的剩余部分直接报废。任务之间补一次探测与恢复，
+    可以让一次外部干扰只影响当前任务。
+
+    ``stop_event`` 被置位时立即停止恢复：用户已请求停止，再启动实例是
+    多余的副作用。该函数自身不抛停止异常——调用方在返回后检查
+    ``stop_event`` 即可，避免把「用户停止」误报成设备故障。
+    """
+
+    def stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
+
+    try:
+        adb.select_device(adb.serial)
+        return True
+    except Exception as exc:
+        if stopped():
+            return False
+        log_callback(f"ADB 设备探测失败，尝试恢复: {exc}")
+
+    if reconnect_device(adb, log_callback):
+        return True
+    if stopped():
+        return False
+
+    log_callback("ADB 重连无效，重新准备 MuMu 实例")
+    try:
+        prepare_device(adb, settings, log_callback, stop_event=stop_event)
+        return True
+    except MuMuStopRequested:
+        return False
+    except Exception as exc:
+        log_callback(f"重新准备 MuMu 实例失败: {exc}")
+        return False
+
+
 def _fatal_device_error(message: str) -> bool:
     """判断错误信息是否属于不可能靠重试恢复的设备级故障。
 
@@ -409,6 +458,18 @@ class BatchTaskWorker(_WorkerBase):
                 execution_count = task_execution_count(self.settings, task.id)
                 if execution_count <= 0:
                     continue
+                # 任务之间补一次设备体检：外部程序关闭/强杀模拟器后，
+                # 后续任务在这里恢复设备，而不是整批卡在「准备连接设备」。
+                # 体检放在 task_started 之前，保证它引发的停止不会留下
+                # 只发 task_started 不发 task_finished 的破窗。
+                ensure_device_ready(
+                    self.adb,
+                    self.settings,
+                    self.log_message.emit,
+                    stop_event=self._stop_requested,
+                )
+                if self._stop_requested.is_set():
+                    break
                 self.task_started.emit(task.id, index, len(self.tasks))
                 self.log_message.emit(
                     f"开始任务 [{index}/{len(self.tasks)}]: {task.name}"

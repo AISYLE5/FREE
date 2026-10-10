@@ -123,7 +123,7 @@ FREE/
 
 | 模块 | 职责 |
 | --- | --- |
-| `worker.py` | `TaskWorker`（单任务）与 `BatchTaskWorker`（顺序批量），共同继承 `_WorkerBase`（共享停止事件、设置字段与 `_finish_with()` 收尾：通知 → 清理旧输出 → 必发 `finished`）。公共流程：`prepare_device()` → 执行任务 → `cleanup_apps()` → `shutdown_mumu()`/`shutdown_mumu_app()` → 发送邮件通知 → 清理旧输出文件。批量模式下每个任务之间做一次 App 清理，失败可重试（见 6.5）|
+| `worker.py` | `TaskWorker`（单任务）与 `BatchTaskWorker`（顺序批量），共同继承 `_WorkerBase`（共享停止事件、设置字段与 `_finish_with()` 收尾：通知 → 清理旧输出 → 必发 `finished`）。公共流程：`prepare_device()` → 执行任务 → `cleanup_apps()` → `shutdown_mumu()`/`shutdown_mumu_app()` → 发送邮件通知 → 清理旧输出文件。批量模式下每个任务开始前做一次 `ensure_device_ready()` 设备体检（见 5.2），每个任务之间做一次 App 清理，失败可重试（见 6.5）|
 | `task_runner.py` | 任务级执行控制：`task_execution_count()` 读取 `task_execution_counts[task_id]`；`run_task_executions()` 允许一个任务在同一批次内尝试最多 N 次，成功后即停，重试前按需执行 App 清理与 ADB 重连回调 |
 | `app_lifecycle.py` | 任务结束后的进程清理：`cleanup_packages()` 汇总任务引用的包名（`collect_packages()`，递归含嵌套动作）与设置项 `cleanup_extra_packages`，按该列表对每个包执行 `adb force-stop`，延迟与开关均来自设置。附加包名用于清理跨任务残留的 App（例如 QQ 分享页会停留在前台顶住下一个任务的启动）|
 
@@ -198,6 +198,7 @@ sequenceDiagram
 `BatchTaskWorker` 按 `order_tasks()` 排序后的任务列表顺序执行，行为差异：
 
 - 每个任务先取 `task_execution_counts[task_id]`，为 0 则跳过；
+- **每个任务开始前做一次设备体检**（`ensure_device_ready()`，位于 `task_started` 之前，保证停止时不留下只发 `task_started` 的破窗）：探活失败时先 `adb connect` 重连，仍失败则回落到完整 `prepare_device()`。外部程序（另一个自动化工具、被强杀的宿主进程）会让设备变 `offline`，没有这一步时后续任务会全部卡在「准备连接设备」且因命中设备级故障而放弃重试，整批任务的剩余部分直接报废；
 - 任务失败后按配置次数重试，重试前做 App 清理 + ADB 重连；
 - 每个任务结束后都做一次 `cleanup_apps()`（隔离各任务）；
 - 任一任务被停止或用户停止则终止后续任务；

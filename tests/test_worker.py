@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from free_app.worker import (
     TaskWorker,
     _fatal_device_error,
     _prune_outputs,
+    ensure_device_ready,
     reconnect_device,
 )
 
@@ -39,6 +41,27 @@ class FakeAdb:
 
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+
+class FlakyAdb(FakeAdb):
+    """可控掉线设备：``offline`` 为真时 ``select_device`` 报设备级故障。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offline = False
+        self.reconnect_count = 0
+        self.reconnect_succeeds = True
+
+    def select_device(self, preferred: str | None = None) -> object:
+        if self.offline:
+            raise AdbError("设备 127.0.0.1:16416 当前状态为 offline")
+        return super().select_device(preferred)
+
+    def reconnect(self) -> bool:
+        self.reconnect_count += 1
+        if self.reconnect_succeeds:
+            self.offline = False
+        return self.reconnect_succeeds
 
 
 def make_task(task_id: str = "demo") -> TaskDefinition:
@@ -135,6 +158,98 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(reconnect_device(adb, logs.append))
         adb.reconnect.assert_called_once()
         self.assertIn("ADB 设备已重新连接", logs[0])
+
+    def test_ensure_device_ready_is_silent_when_device_is_online(self) -> None:
+        """设备在线时不重连、不重新准备实例，避免无谓副作用。"""
+
+        adb = FlakyAdb()
+        logs: list[str] = []
+        with patch("free_app.worker.prepare_device") as prepare:
+            self.assertTrue(ensure_device_ready(adb, sanitized_settings(), logs.append))
+
+        self.assertEqual(adb.reconnect_count, 0)
+        prepare.assert_not_called()
+        self.assertEqual(logs, [])
+
+    def test_ensure_device_ready_recovers_offline_device_by_reconnect(self) -> None:
+        """外部强杀模拟器导致 offline 时，先靠 adb connect 恢复。"""
+
+        adb = FlakyAdb()
+        adb.offline = True
+        logs: list[str] = []
+        with patch("free_app.worker.prepare_device") as prepare:
+            self.assertTrue(ensure_device_ready(adb, sanitized_settings(), logs.append))
+
+        self.assertEqual(adb.reconnect_count, 1)
+        self.assertFalse(adb.offline)
+        prepare.assert_not_called()
+        self.assertTrue(any("尝试恢复" in message for message in logs))
+
+    def test_ensure_device_ready_reprepares_instance_when_reconnect_fails(self) -> None:
+        """重连无效（实例已被关掉）时回落到完整 prepare_device。"""
+
+        adb = FlakyAdb()
+        adb.offline = True
+        adb.reconnect_succeeds = False
+        settings = sanitized_settings()
+        logs: list[str] = []
+
+        def reprepare(
+            _adb: object, _settings: object, _log: object, **_kwargs: object
+        ) -> None:
+            adb.offline = False
+
+        with patch("free_app.worker.prepare_device", side_effect=reprepare) as prepare:
+            self.assertTrue(ensure_device_ready(adb, settings, logs.append))
+
+        prepare.assert_called_once()
+        self.assertTrue(any("重新准备 MuMu 实例" in message for message in logs))
+
+    def test_ensure_device_ready_reports_false_when_recovery_fails(self) -> None:
+        adb = FlakyAdb()
+        adb.offline = True
+        adb.reconnect_succeeds = False
+        logs: list[str] = []
+        with patch(
+            "free_app.worker.prepare_device",
+            side_effect=AdbError("等待 MuMu ADB 设备超时"),
+        ):
+            self.assertFalse(
+                ensure_device_ready(adb, sanitized_settings(), logs.append)
+            )
+
+        self.assertTrue(any("重新准备 MuMu 实例失败" in message for message in logs))
+
+    def test_ensure_device_ready_skips_recovery_when_stop_requested(self) -> None:
+        """用户已停止时不再启动实例，也不抛停止异常。"""
+
+        adb = FlakyAdb()
+        adb.offline = True
+        stop_event = Event()
+        stop_event.set()
+        with patch("free_app.worker.prepare_device") as prepare:
+            self.assertFalse(
+                ensure_device_ready(
+                    adb, sanitized_settings(), lambda _message: None, stop_event
+                )
+            )
+
+        self.assertEqual(adb.reconnect_count, 0)
+        prepare.assert_not_called()
+
+    def test_ensure_device_ready_treats_prepare_stop_as_not_ready(self) -> None:
+        """恢复过程中用户停止：返回 False，由调用方按停止流程处理。"""
+
+        adb = FlakyAdb()
+        adb.offline = True
+        adb.reconnect_succeeds = False
+        with patch(
+            "free_app.worker.prepare_device",
+            side_effect=MuMuStopRequested("用户请求停止设备准备"),
+        ):
+            self.assertFalse(
+                ensure_device_ready(adb, sanitized_settings(), lambda _message: None)
+            )
 
     def test_single_worker_runs_once_even_with_high_execution_count(self) -> None:
         task = make_task()
@@ -766,6 +881,103 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(summary.status, RunStatus.FAILED)
         self.assertEqual(len(summary.results), 1)
         self.assertEqual(summary.results[0].failed_step, "准备连接设备")
+
+    def test_batch_worker_recovers_device_between_tasks(self) -> None:
+        """事故回归：外部强杀模拟器后，后续任务应恢复设备而不是整批报废。
+
+        真实事故（logs/run_20261010_200141.log）：另一个程序在任务 3 之后
+        强杀了 MuMu 宿主进程，设备变 ``offline``，任务 4、5 全部失败。
+        任务之间的设备体检必须让整批任务继续跑完。
+        """
+
+        first_task = make_task("first")
+        second_task = make_task("second")
+        adb = FlakyAdb()
+        worker = BatchTaskWorker(
+            [first_task, second_task],
+            adb,
+            Path("screenshots"),
+            0,
+            settings=sanitized_settings(),
+        )
+        first_engine = MagicMock()
+        first_engine.run.return_value = RunResult(
+            first_task.id, RunStatus.FAILED, 0, 1, error="ADB 命令失败: device offline"
+        )
+        second_engine = MagicMock()
+        second_engine.run.return_value = RunResult(
+            second_task.id, RunStatus.SUCCESS, 1, 1
+        )
+
+        def kill_device_after_first_attempt(task: TaskDefinition) -> RunResult:
+            # 模拟外部程序：任务 1 运行期间杀掉模拟器宿主进程，
+            # 任务 1 因此以设备级故障收场。
+            if task.id == first_task.id:
+                adb.offline = True
+            engine = first_engine if task.id == first_task.id else second_engine
+            return engine.run(task)
+
+        finished: list[object] = []
+        worker.finished.connect(finished.append)
+        with (
+            patch("free_app.worker.prepare_device", return_value=True),
+            patch("free_app.worker.shutdown_mumu", return_value=True),
+            patch("free_app.worker.cleanup_apps"),
+            patch("free_app.worker.send_run_notification"),
+            patch.object(
+                worker, "_run_attempt", side_effect=kill_device_after_first_attempt
+            ),
+        ):
+            worker.run()
+
+        # 任务 2 开始前的体检通过 adb connect 恢复设备，任务 2 正常执行。
+        self.assertEqual(adb.reconnect_count, 1)
+        second_engine.run.assert_called_once_with(second_task)
+        summary = finished[0]
+        self.assertEqual(summary.failed_task, first_task.id)
+        self.assertEqual(summary.completed_tasks, 2)
+        self.assertEqual(
+            [result.status for result in summary.results],
+            [RunStatus.FAILED, RunStatus.SUCCESS],
+        )
+
+    def test_batch_worker_stops_without_running_task_when_stop_set_during_check(
+        self,
+    ) -> None:
+        """体检期间的停止不应留下只发 task_started 的破窗。"""
+
+        task = make_task()
+        worker = BatchTaskWorker(
+            [task],
+            FlakyAdb(),
+            Path("screenshots"),
+            0,
+            settings=sanitized_settings(),
+        )
+        finished: list[object] = []
+        task_started: list[object] = []
+        task_finished: list[object] = []
+        worker.finished.connect(finished.append)
+        worker.task_started.connect(lambda *_args: task_started.append(True))
+        worker.task_finished.connect(task_finished.append)
+
+        def stop_during_check(*_args: object, **_kwargs: object) -> bool:
+            worker.stop()
+            return False
+
+        with (
+            patch("free_app.worker.prepare_device", return_value=True),
+            patch("free_app.worker.shutdown_mumu", return_value=True),
+            patch.object(worker, "_make_engine") as make_engine,
+            patch("free_app.worker.send_run_notification"),
+            patch("free_app.worker.ensure_device_ready", side_effect=stop_during_check),
+        ):
+            worker.run()
+
+        make_engine.assert_not_called()
+        self.assertEqual(task_started, [])
+        self.assertEqual(task_finished, [])
+        self.assertEqual(finished[0].status, RunStatus.STOPPED)
 
     def test_batch_worker_marks_summary_failed_when_config_errors_exist(self) -> None:
         task = make_task()
