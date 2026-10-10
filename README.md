@@ -50,6 +50,7 @@ FREE/
 │  ├─ ui_main.py                  # 主页 + 主窗口容器 + GUI 入口
 │  ├─ ui_settings.py              # 设置页 + 设置对话框（含今日完成、OCR 模型下载）
 │  ├─ ui_task_manager.py          # 任务管理页 + 任务编辑器 + 查看器 + 动作表单
+│  ├─ ui_tokens.py                # 设计令牌（颜色/圆角/字号/字重/按钮角色）
 │  └─ worker.py                   # Qt 工作线程任务执行
 ├─ tests\                         # 自动化测试
 ├─ config\                        # 用户配置（settings.json 与 task_completions.json 为运行时生成）
@@ -57,6 +58,9 @@ FREE/
 ├─ screenshots\                   # 动作/失败截图
 ├─ models\                        # OCR 模型下载目录
 ├─ main.py                        # 根目录启动入口
+├─ demo\                          # 界面样式总览（开发辅助，不参与运行）
+│  ├─ styles.py                   #   可视化 Demo（python demo\styles.py）
+│  └─ STYLE_GUIDE.md              #   界面样式清单（Demo 的配套文档）
 ├─ .gitignore                     # Git 忽略规则
 ├─ pyproject.toml                 # 项目配置与依赖
 ├─ ARCHITECTURE.md                # 架构与模块说明

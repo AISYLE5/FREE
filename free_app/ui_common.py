@@ -5,6 +5,9 @@
 按钮工厂与尺寸常量；页头 / 卡片标题 / 对话框底栏 / 滚动页面骨架；
 跨模块共享控件（ElidedLabel / SettingsComboBox / ExecutionCountComboBox /
 ModelRowCard / confirm_dialog）。
+
+**所有颜色 / 圆角 / 字号 / 字重的取值都来自 ``ui_tokens.py``**，本模块只负责
+把它们组装成 QSS 片段与控件；此处不再出现裸色值。
 """
 
 from __future__ import annotations
@@ -33,30 +36,38 @@ from PySide6.QtWidgets import (
     QMessageBox as _QtMessageBox,
 )
 
+from . import ui_tokens as _t
+from .ui_tokens import (
+    BUTTON_DANGER,
+    BUTTON_DIALOG,
+    BUTTON_MIN_WIDTH_WIDE,
+    BUTTON_NEUTRAL,
+    BUTTON_PRIMARY,
+    BUTTON_RUN,
+    BUTTON_SECONDARY,
+    BUTTON_STOP,
+    BUTTON_WIDTH,
+    BUTTON_WIDTH_BACK,
+    BUTTON_WIDTH_ICON,
+    BUTTON_WIDTH_NARROW,
+    COMBO_WIDTH_NARROW,
+    CONTROL_HEIGHT,
+    DARK_PRESSED_VGRAD,
+    GREEN_DIAG,
+    GREEN_VGRAD,
+    GREEN_VGRAD_HOVER,
+    RED_VGRAD,
+    RED_VGRAD_HOVER,
+)
+
 # 合并前 styles.py 以 ``_s.XXX`` 引用同一批片段；本模块即样式来源，保留别名。
 # 必须在样式片段之前建立，供模块级求值（如 PAGE_BASE_QSS）使用。
 _s = sys.modules[__name__]
 
 # ==================================================== 样式表片段
-# 原 free_app/styles.py，逐字并入。
 
-# 绿色"保存"/主按钮共用的垂直渐变。
-
-GREEN_VGRAD = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #137f73)"
-
-GREEN_VGRAD_HOVER = (
-
-    "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a9385, stop:1 #0e6e64)"
-
-)
-
-GREEN_DIAG = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a9385, stop:1 #137f73)"
-
-DARK_PRESSED_VGRAD = (
-
-    "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #137f73, stop:1 #095b54)"
-
-)
+# 渐变取值在 ui_tokens，已在上方 import 进来，可直接以
+# ``_s.GREEN_VGRAD`` 形式被其它模块引用，无需重复赋值。
 
 # 表单控件框（QLineEdit / QSpinBox / QTextEdit / QPlainTextEdit）。
 
@@ -64,47 +75,47 @@ UNIFIED_FORM_CONTROLS_QSS = (
 
     "            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                border: 1px solid #cbdcd6;\n"
+    f"                border: 1px solid {_t.BORDER};\n"
 
-    "                border-radius: 8px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                color: #193331;\n"
+    f"                color: {_t.TEXT};\n"
 
-    "                selection-background-color: #cce8e0;\n"
+    f"                selection-background-color: {_t.BRAND_WASH};\n"
 
     "            }\n"
 
     "            QLineEdit, QSpinBox, QDoubleSpinBox {\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                max-height: 40px;\n"
+    f"                max-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                padding: 0 12px;\n"
+    f"                padding: 0 {_t.PAD_SM}px;\n"
 
     "            }\n"
 
     "            QTextEdit, QPlainTextEdit {\n"
 
-    "                padding: 8px 12px;\n"
+    f"                padding: {_t.PAD_XS}px {_t.PAD_SM}px;\n"
 
     "            }\n"
 
     "            QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QTextEdit:hover, QPlainTextEdit:hover {\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                border-color: #83b9ad;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
     "            }\n"
 
     "            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                border: 2px solid #2b9b8b;\n"
+    f"                border: 2px solid {_t.BRAND};\n"
 
     "            }\n"
 
@@ -116,29 +127,29 @@ UNIFIED_COMBO_QSS = (
 
     "            QComboBox {\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                padding: 0 34px 0 13px;\n"
+    f"                max-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                border: 1px solid #cbdcd6;\n"
+    f"                padding: 0 34px 0 {_t.PAD_SM}px;\n"
 
-    "                border-radius: 8px;\n"
+    f"                border: 1px solid {_t.BORDER};\n"
 
-    "                background: #ffffff;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                color: #193331;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                selection-background-color: #d6ebe5;\n"
+    f"                color: {_t.TEXT};\n"
 
-    "                max-height: 40px;\n"
+    f"                selection-background-color: {_t.BRAND_WASH};\n"
 
     "            }\n"
 
     "            QComboBox:hover {\n"
 
-    "                border-color: #83b9ad;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
     "            }\n"
 
@@ -154,9 +165,9 @@ UNIFIED_COMBO_QSS = (
 
     "            QComboBox:focus {\n"
 
-    "                border: 2px solid #2b9b8b;\n"
+    f"                border: 2px solid {_t.BRAND};\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
     "            }\n"
 
@@ -172,51 +183,51 @@ UNIFIED_COMBO_QSS = (
 
     "                border-left: none;\n"
 
-    "                border-top-right-radius: 8px;\n"
+    f"                border-top-right-radius: {_t.RADIUS_MD}px;\n"
 
-    "                border-bottom-right-radius: 8px;\n"
+    f"                border-bottom-right-radius: {_t.RADIUS_MD}px;\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
     "            }\n"
 
     "            QComboBox QAbstractItemView {\n"
 
-    "                min-width: 120px;\n"
+    f"                min-width: {_t.BUTTON_MIN_WIDTH_WIDE}px;\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                color: #244340;\n"
+    f"                color: {_t.TEXT_SECTION};\n"
 
-    "                border: 1px solid #b9d3ca;\n"
+    f"                border: 1px solid {_t.BORDER_STRONG};\n"
 
-    "                border-radius: 7px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                padding: 6px;\n"
+    f"                padding: {_t.GAP_SM}px;\n"
 
     "                outline: 0;\n"
 
-    "                selection-background-color: #d6ebe5;\n"
+    f"                selection-background-color: {_t.BRAND_WASH};\n"
 
-    "                selection-color: #0c6e63;\n"
+    f"                selection-color: {_t.BRAND_TEXT};\n"
 
     "            }\n"
 
     "            QComboBox QAbstractItemView::item {\n"
 
-    "                min-height: 34px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT_COMPACT}px;\n"
 
-    "                padding: 0 12px;\n"
+    f"                padding: 0 {_t.PAD_SM}px;\n"
 
-    "                border-radius: 6px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
     "            }\n"
 
     "            QComboBox QAbstractItemView::item:hover {\n"
 
-    "                background: #edf7f4;\n"
+    f"                background: {_t.BRAND_WASH_HOVER};\n"
 
-    "                color: #0c6e63;\n"
+    f"                color: {_t.BRAND_TEXT};\n"
 
     "            }\n"
 
@@ -228,9 +239,9 @@ UNIFIED_CHECKBOX_QSS = (
 
     "            QCheckBox {\n"
 
-    "                color: #193331;\n"
+    f"                color: {_t.TEXT};\n"
 
-    "                spacing: 8px;\n"
+    f"                spacing: {_t.PAD_XS}px;\n"
 
     "            }\n"
 
@@ -240,234 +251,335 @@ UNIFIED_CHECKBOX_QSS = (
 
     "                height: 18px;\n"
 
-    "                border: 2px solid #b9d3ca;\n"
+    f"                border: 2px solid {_t.BORDER_STRONG};\n"
 
-    "                border-radius: 4px;\n"
+    f"                border-radius: {_t.RADIUS_SM}px;\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
     "            }\n"
 
     "            QCheckBox::indicator:checked {\n"
 
-    "                background: " + GREEN_DIAG + ";\n"
+    f"                background: {GREEN_DIAG};\n"
 
-    "                border-color: #137f73;\n"
+    f"                border-color: {_t.BRAND};\n"
 
     "            }\n"
 
     "            QCheckBox::indicator:hover {\n"
 
-    "                border-color: #83b9ad;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
     "            }\n"
 
 )
 
-# 通用按钮（基础 + 语义变体 + 交互状态）。
+# 通用按钮：**六个语义角色**，每个角色三态（常态 / 悬停 / 按下）。
+#
+# 角色名即 objectName，定义在 ``ui_tokens``（BUTTON_*）。控件通过
+# ``ui_common`` 的工厂函数设置角色，两侧不会各写一遍字符串字面量。
+#
+# 所有角色共用同一套几何（高度 / 圆角 / 内边距 / 字重），差异只在配色，
+# 因此按钮不会因角色不同而在成排布局里跳动。
 
-# 动作编辑器对话框与任务管理页控件共用。
-
-UNIFIED_BUTTONS_QSS = (
+_GEOMETRY_QSS = (
 
     "            QPushButton, QToolButton {\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                min-width: 88px;\n"
+    f"                min-width: {_t.BUTTON_WIDTH_BACK}px;\n"
 
-    "                padding: 0 16px;\n"
+    f"                padding: 0 {_t.PAD_MD}px;\n"
 
-    "                border: 1px solid #cbdcd6;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                border-radius: 8px;\n"
-
-    "                background: #ffffff;\n"
-
-    "                color: #31504d;\n"
-
-    "                font-weight: 650;\n"
+    f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
 
     "            }\n"
 
-    "            QPushButton:hover, QToolButton:hover {\n"
+)
 
-    "                background: #edf7f4;\n"
-
-    "                border-color: #83b9ad;\n"
-
-    "            }\n"
-
-    "            QPushButton:pressed, QToolButton:pressed {\n"
-
-    "                background: #dcece7;\n"
-
-    "                border-color: #65b3a7;\n"
-
-    "            }\n"
+_STATE_QSS = (
 
     "            QPushButton:disabled, QToolButton:disabled {\n"
 
-    "                color: #9aa9a7;\n"
+    f"                color: {_t.TEXT_DISABLED};\n"
 
-    "                background: #edf1f0;\n"
+    f"                background: {_t.SURFACE_DISABLED};\n"
 
-    "                border-color: #dce5e2;\n"
-
-    "            }\n"
-
-    "            QPushButton#secondaryButton, QPushButton#settingsTestButton, QPushButton#taskManagerPointerButton, QPushButton#settingsModelAction {\n"
-
-    "                color: #146e65;\n"
-
-    "                background: #e3f2ed;\n"
-
-    "                border-color: #afd5ca;\n"
+    f"                border-color: {_t.BORDER_FAINT};\n"
 
     "            }\n"
 
-    "            QPushButton#secondaryButton:hover, QPushButton#settingsTestButton:hover, QPushButton#taskManagerPointerButton:hover, QPushButton#settingsModelAction:hover {\n"
+)
 
-    "                background: #d6ebe5;\n"
+# 次要按钮：浅绿，最常用的默认外观。
+_SECONDARY_QSS = (
 
-    "                border-color: #83b9ad;\n"
+    f"            QPushButton#{BUTTON_SECONDARY} {{\n"
 
-    "            }\n"
+    f"                color: {_t.BRAND_TEXT_SOFT};\n"
 
-    "            QPushButton#secondaryButton:pressed, QPushButton#settingsTestButton:pressed, QPushButton#taskManagerPointerButton:pressed, QPushButton#settingsModelAction:pressed {\n"
+    f"                background: {_t.BRAND_FILL};\n"
 
-    "                background: #c9e2db;\n"
-
-    "                border-color: #65b3a7;\n"
-
-    "            }\n"
-
-    "            QPushButton#taskManagerPointerButton:checked {\n"
-
-    "                color: #ffffff;\n"
-
-    "                background: #137f73;\n"
-
-    "                border-color: #137f73;\n"
+    f"                border: 1px solid {_t.BRAND_LINE_SOFT};\n"
 
     "            }\n"
 
-    "            QPushButton#taskManagerPointerButton:checked:hover {\n"
+    f"            QPushButton#{BUTTON_SECONDARY}:hover {{\n"
 
-    "                background: #0e6e64;\n"
+    f"                background: {_t.BRAND_WASH};\n"
 
-    "                border-color: #0e6e64;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
     "            }\n"
 
-    "            QPushButton#settingsSaveButton, QPushButton#taskManagerOperationSave, QPushButton:default {\n"
+    f"            QPushButton#{BUTTON_SECONDARY}:pressed {{\n"
 
-    "                min-height: 40px;\n"
+    f"                background: {_t.BRAND_WASH_PRESSED};\n"
 
-    "                min-width: 100px;\n"
+    f"                border-color: {_t.BRAND_LINE};\n"
 
-    "                padding: 0 20px;\n"
+    "            }\n"
 
-    "                color: #ffffff;\n"
+    # 可切换的次要按钮：选中时实心主色（原「显示坐标」工具按钮）。
+    f"            QPushButton#{BUTTON_SECONDARY}:checked {{\n"
 
-    "                background: " + GREEN_VGRAD + ";\n"
+    f"                color: {_t.TEXT_ON_BRAND};\n"
+
+    f"                background: {_t.BRAND};\n"
+
+    f"                border-color: {_t.BRAND};\n"
+
+    "            }\n"
+
+    f"            QPushButton#{BUTTON_SECONDARY}:checked:hover {{\n"
+
+    f"                background: {_t.BRAND_DARK};\n"
+
+    f"                border-color: {_t.BRAND_DARK};\n"
+
+    "            }\n"
+
+)
+
+# 主按钮：绿色渐变，白字。:default 一并纳入，让对话框默认按钮自动获得同款。
+_PRIMARY_QSS = (
+
+    f"            QPushButton#{BUTTON_PRIMARY}, QPushButton:default {{\n"
+
+    f"                min-width: {_t.BUTTON_WIDTH_NARROW}px;\n"
+
+    f"                padding: 0 {_t.PAD_LG}px;\n"
+
+    f"                color: {_t.TEXT_ON_BRAND};\n"
+
+    f"                background: {GREEN_VGRAD};\n"
 
     "                border: none;\n"
 
-    "                border-radius: 8px;\n"
+    "            }\n"
 
-    "                font-weight: 700;\n"
+    f"            QPushButton#{BUTTON_PRIMARY}:hover, QPushButton:default:hover {{\n"
+
+    f"                background: {GREEN_VGRAD_HOVER};\n"
 
     "            }\n"
 
-    "            QPushButton#settingsSaveButton:hover, QPushButton#taskManagerOperationSave:hover, QPushButton:default:hover {\n"
+    f"            QPushButton#{BUTTON_PRIMARY}:pressed, QPushButton:default:pressed {{\n"
 
-    "                background: " + GREEN_VGRAD_HOVER + ";\n"
-
-    "            }\n"
-
-    "            QPushButton#settingsSaveButton:pressed, QPushButton#taskManagerOperationSave:pressed, QPushButton:default:pressed {\n"
-
-    "                background: " + DARK_PRESSED_VGRAD + ";\n"
+    f"                background: {DARK_PRESSED_VGRAD};\n"
 
     "            }\n"
 
-    "            QPushButton#quietButton, QPushButton#settingsCancelButton {\n"
+)
 
-    "                color: #31504d;\n"
+# 中性按钮：浅灰，用于取消 / 返回这类"退出"语义。
+_NEUTRAL_QSS = (
 
-    "                background: #f6f9f8;\n"
+    f"            QPushButton#{BUTTON_NEUTRAL} {{\n"
 
-    "            }\n"
+    f"                color: {_t.TEXT_BUTTON};\n"
 
-    "            QPushButton#quietButton:hover, QPushButton#settingsCancelButton:hover {\n"
+    f"                background: {_t.SURFACE_SUBTLE};\n"
 
-    "                background: #edf7f4;\n"
-
-    "                border-color: #83b9ad;\n"
-
-    "            }\n"
-
-    "            QPushButton#quietButton:pressed, QPushButton#settingsCancelButton:pressed {\n"
-
-    "                background: #dcece7;\n"
+    f"                border: 1px solid {_t.BORDER};\n"
 
     "            }\n"
 
-    '            QPushButton#dangerButton, QPushButton#settingsModelAction[downloaded="true"] {\n'
+    f"            QPushButton#{BUTTON_NEUTRAL}:hover {{\n"
 
-    "                color: #a34a42;\n"
+    f"                background: {_t.BRAND_WASH_HOVER};\n"
 
-    "                background: #fbeae8;\n"
-
-    "                border-color: #e5b9b3;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
     "            }\n"
 
-    '            QPushButton#dangerButton:hover, QPushButton#settingsModelAction[downloaded="true"]:hover {\n'
+    f"            QPushButton#{BUTTON_NEUTRAL}:pressed {{\n"
 
-    "                background: #f6d8d4;\n"
-
-    "                border-color: #d88f87;\n"
+    f"                background: {_t.BRAND_WASH_PRESSED};\n"
 
     "            }\n"
 
-    '            QPushButton#dangerButton:pressed, QPushButton#settingsModelAction[downloaded="true"]:pressed {\n'
+)
 
-    "                background: #efc4be;\n"
+# 危险按钮：浅红，不可逆操作。
+_DANGER_QSS = (
 
-    "                border-color: #c9776e;\n"
+    f"            QPushButton#{BUTTON_DANGER} {{\n"
 
-    "            }\n"
+    f"                color: {_t.DANGER_TEXT};\n"
 
-    "            QPushButton#runActionButton {\n"
+    f"                background: {_t.DANGER_FILL};\n"
 
-    "                color: #ffffff;\n"
-
-    "                background: #1976d2;\n"
-
-    "                border-color: #1976d2;\n"
-
-    "                font-weight: 700;\n"
+    f"                border: 1px solid {_t.DANGER_LINE};\n"
 
     "            }\n"
 
-    "            QPushButton#runActionButton:hover {\n"
+    f"            QPushButton#{BUTTON_DANGER}:hover {{\n"
 
-    "                background: #1565c0;\n"
+    f"                background: {_t.DANGER_FILL_HOVER};\n"
 
-    "                border-color: #1565c0;\n"
-
-    "            }\n"
-
-    "            QPushButton#runActionButton:pressed {\n"
-
-    "                background: #0d47a1;\n"
-
-    "                border-color: #0d47a1;\n"
+    f"                border-color: {_t.DANGER_LINE_HOVER};\n"
 
     "            }\n"
 
+    f"            QPushButton#{BUTTON_DANGER}:pressed {{\n"
+
+    f"                background: {_t.DANGER_FILL_PRESSED};\n"
+
+    f"                border-color: {_t.DANGER_LINE_PRESSED};\n"
+
+    "            }\n"
+
+)
+
+# 运行按钮：蓝色实心，用于"运行 / 试运行"这类与保存区分开的操作。
+_RUN_QSS = (
+
+    f"            QPushButton#{BUTTON_RUN} {{\n"
+
+    f"                color: {_t.TEXT_ON_BRAND};\n"
+
+    f"                background: {_t.RUN_BLUE};\n"
+
+    f"                border: 1px solid {_t.RUN_BLUE};\n"
+
+    "            }\n"
+
+    f"            QPushButton#{BUTTON_RUN}:hover {{\n"
+
+    f"                background: {_t.RUN_BLUE_HOVER};\n"
+
+    f"                border-color: {_t.RUN_BLUE_HOVER};\n"
+
+    "            }\n"
+
+    f"            QPushButton#{BUTTON_RUN}:pressed {{\n"
+
+    f"                background: {_t.RUN_BLUE_PRESSED};\n"
+
+    f"                border-color: {_t.RUN_BLUE_PRESSED};\n"
+
+    "            }\n"
+
+)
+
+# 停止按钮：红色渐变。主页"停止"与调试视图"停止"共用同一角色。
+_STOP_QSS = (
+
+    f"            QPushButton#{BUTTON_STOP} {{\n"
+
+    f"                color: {_t.TEXT_ON_BRAND};\n"
+
+    f"                background: {RED_VGRAD};\n"
+
+    "                border: none;\n"
+
+    "            }\n"
+
+    f"            QPushButton#{BUTTON_STOP}:hover {{\n"
+
+    f"                background: {RED_VGRAD_HOVER};\n"
+
+    "            }\n"
+
+    f"            QPushButton#{BUTTON_STOP}:disabled {{\n"
+
+    f"                color: {_t.TEXT_DISABLED};\n"
+
+    f"                background: {_t.SURFACE_DISABLED};\n"
+
+    f"                border: 1px solid {_t.BORDER_FAINT};\n"
+
+    "            }\n"
+
+)
+
+# 主页执行按钮的四种运行状态，通过 [runState] 动态属性切换。
+# 仅覆盖配色，几何仍由上面的角色规则决定。
+_RUNSTATE_QSS = (
+
+    f'            QPushButton[runState="busy"]:disabled {{\n'
+
+    f"                color: {_t.TEXT_MUTED_ALT};\n"
+
+    f"                background: {_t.SURFACE_DISABLED};\n"
+
+    f"                border-color: {_t.BORDER};\n"
+
+    "            }\n"
+
+    f'            QPushButton[runState="stop"] {{\n'
+
+    f"                color: {_t.TEXT_ON_BRAND};\n"
+
+    f"                background: {_t.DANGER_SOLID};\n"
+
+    f"                border: 1px solid {_t.DANGER_SOLID};\n"
+
+    "            }\n"
+
+    f'            QPushButton[runState="stop"]:hover {{\n'
+
+    f"                background: {_t.DANGER_SOLID_HOVER};\n"
+
+    f"                border-color: {_t.DANGER_SOLID_HOVER};\n"
+
+    "            }\n"
+
+    f'            QPushButton[runState="stop"]:pressed {{\n'
+
+    f"                background: {_t.DANGER_SOLID_PRESSED};\n"
+
+    f"                border-color: {_t.DANGER_SOLID_PRESSED};\n"
+
+    "            }\n"
+
+    f'            QPushButton[runState="stopping"]:disabled {{\n'
+
+    f"                color: {_t.WARN_TEXT};\n"
+
+    f"                background: {_t.WARN_FILL_DEEP};\n"
+
+    f"                border-color: {_t.WARN_LINE_ALT};\n"
+
+    "            }\n"
+
+)
+
+UNIFIED_BUTTONS_QSS = (
+    _GEOMETRY_QSS
+    + _STATE_QSS
+    + _SECONDARY_QSS
+    + _PRIMARY_QSS
+    + _NEUTRAL_QSS
+    + _DANGER_QSS
+    + _RUN_QSS
+    + _STOP_QSS
+    + _RUNSTATE_QSS
 )
 
 # 页面级样式表的唯一入口：所有公共控件的基础规则，
@@ -490,7 +602,9 @@ COMMON_CONTROLS_QSS = (
 
 # 嵌入式面板（查看器、对话框、任务管理页）的公共底座：透明背景。
 
-PANEL_BASE_QSS = "            QWidget { background: transparent; color: #193331; }\n"
+PANEL_BASE_QSS = (
+    f"            QWidget {{ background: transparent; color: {_t.TEXT}; }}\n"
+)
 
 # 面板内的白色圆角内容区：JSON/运行日志文本框与 UI 树共用同一外观。
 
@@ -498,13 +612,13 @@ PANEL_CONTENT_QSS = (
 
     "            QPlainTextEdit, QTreeWidget {\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                border: 1px solid #cbdcd6;\n"
+    f"                border: 1px solid {_t.BORDER};\n"
 
-    "                border-radius: 8px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                color: #244340;\n"
+    f"                color: {_t.TEXT_SECTION};\n"
 
     "                outline: 0;\n"
 
@@ -512,11 +626,11 @@ PANEL_CONTENT_QSS = (
 
     "            QPlainTextEdit {\n"
 
-    "                padding: 10px;\n"
+    f"                padding: {_t.PAD_MD}px;\n"
 
-    "                selection-background-color: #cce8e0;\n"
+    f"                selection-background-color: {_t.BRAND_WASH};\n"
 
-    "                font-size: 13px;\n"
+    f"                font-size: {_t.FONT_MD}px;\n"
 
     "            }\n"
 
@@ -524,7 +638,7 @@ PANEL_CONTENT_QSS = (
 
     "                min-height: 28px;\n"
 
-    "                padding: 4px 8px;\n"
+    f"                padding: {_t.RADIUS_SM}px {_t.PAD_XS}px;\n"
 
     "                border: none;\n"
 
@@ -532,15 +646,15 @@ PANEL_CONTENT_QSS = (
 
     "            QTreeWidget::item:selected {\n"
 
-    "                background: #dff2ed;\n"
+    f"                background: {_t.BRAND_WASH};\n"
 
-    "                color: #0f625b;\n"
+    f"                color: {_t.BRAND_TEXT};\n"
 
     "            }\n"
 
     "            QTreeWidget::item:hover {\n"
 
-    "                background: #edf7f4;\n"
+    f"                background: {_t.BRAND_WASH_HOVER};\n"
 
     "            }\n"
 
@@ -552,9 +666,9 @@ SCROLLBAR_QSS = (
 
     "            QScrollBar:vertical {\n"
 
-    "                width: 6px;\n"
+    f"                width: {_t.GAP_SM}px;\n"
 
-    "                margin: 4px 2px 4px 0;\n"
+    f"                margin: {_t.RADIUS_SM}px 2px {_t.RADIUS_SM}px 0;\n"
 
     "                background: transparent;\n"
 
@@ -562,9 +676,9 @@ SCROLLBAR_QSS = (
 
     "            QScrollBar:horizontal {\n"
 
-    "                height: 6px;\n"
+    f"                height: {_t.GAP_SM}px;\n"
 
-    "                margin: 0 4px 2px 4px;\n"
+    f"                margin: 0 {_t.RADIUS_SM}px 2px {_t.RADIUS_SM}px;\n"
 
     "                background: transparent;\n"
 
@@ -572,19 +686,19 @@ SCROLLBAR_QSS = (
 
     "            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {\n"
 
-    "                min-height: 20px;\n"
+    f"                min-height: {_t.PAD_LG}px;\n"
 
-    "                min-width: 20px;\n"
+    f"                min-width: {_t.PAD_LG}px;\n"
 
-    "                border-radius: 3px;\n"
+    f"                border-radius: {_t.RADIUS_SM}px;\n"
 
-    "                background: #b9d3ca;\n"
+    f"                background: {_t.BRAND_TRACK};\n"
 
     "            }\n"
 
     "            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {\n"
 
-    "                background: #8bbeb2;\n"
+    f"                background: {_t.BRAND_TRACK_HOVER};\n"
 
     "            }\n"
 
@@ -616,95 +730,95 @@ MESSAGE_BOX_QSS = (
 
     "            QMessageBox, QMessageBox QWidget {\n"
 
-    "                background: #f2f6f4;\n"
+    f"                background: {_t.SURFACE_PAGE_ALT};\n"
 
-    "                color: #193331;\n"
+    f"                color: {_t.TEXT};\n"
 
     "            }\n"
 
     "            QMessageBox QLabel {\n"
 
-    "                background: #f2f6f4;\n"
+    f"                background: {_t.SURFACE_PAGE_ALT};\n"
 
-    "                color: #193331;\n"
+    f"                color: {_t.TEXT};\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton {\n"
 
-    "                min-width: 72px;\n"
+    f"                min-width: 72px;\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                padding: 0 14px;\n"
+    f"                padding: 0 {_t.GAP_LG}px;\n"
 
-    "                border: 1px solid #cbdad6;\n"
+    f"                border: 1px solid {_t.BORDER};\n"
 
-    "                border-radius: 8px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                background: #ffffff;\n"
+    f"                background: {_t.SURFACE_CARD};\n"
 
-    "                color: #31504d;\n"
+    f"                color: {_t.TEXT_BUTTON};\n"
 
-    "                font-weight: 650;\n"
+    f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton:hover {\n"
 
-    "                background: #edf7f4;\n"
+    f"                background: {_t.BRAND_WASH_HOVER};\n"
 
-    "                border-color: #83b9ad;\n"
+    f"                border-color: {_t.BRAND_LINE_HOVER};\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton:pressed {\n"
 
-    "                background: #dcece7;\n"
+    f"                background: {_t.BRAND_WASH_PRESSED};\n"
 
-    "                border-color: #65b3a7;\n"
+    f"                border-color: {_t.BRAND_LINE};\n"
 
     "            }\n"
 
-    "            QMessageBox QPushButton#messageBoxAction {\n"
+    f"            QMessageBox QPushButton#{_t.BUTTON_DIALOG} {{\n"
 
-    "                min-width: 96px;\n"
+    f"                min-width: 96px;\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                padding: 0 16px;\n"
+    f"                padding: 0 {_t.PAD_MD}px;\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton:default {\n"
 
-    "                min-width: 96px;\n"
+    f"                min-width: 96px;\n"
 
-    "                min-height: 40px;\n"
+    f"                min-height: {_t.CONTROL_HEIGHT}px;\n"
 
-    "                padding: 0 16px;\n"
+    f"                padding: 0 {_t.PAD_MD}px;\n"
 
-    "                color: #ffffff;\n"
+    f"                color: {_t.TEXT_ON_BRAND};\n"
 
-    "                background: " + GREEN_VGRAD + ";\n"
+    f"                background: {GREEN_VGRAD};\n"
 
     "                border: none;\n"
 
-    "                border-radius: 8px;\n"
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
 
-    "                font-weight: 700;\n"
+    f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton:default:hover {\n"
 
-    "                background: " + GREEN_VGRAD_HOVER + ";\n"
+    f"                background: {GREEN_VGRAD_HOVER};\n"
 
     "            }\n"
 
     "            QMessageBox QPushButton:default:pressed {\n"
 
-    "                background: " + DARK_PRESSED_VGRAD + ";\n"
+    f"                background: {DARK_PRESSED_VGRAD};\n"
 
     "            }\n"
 
@@ -716,13 +830,13 @@ CARD_TITLE_QSS = (
 
     "            QLabel#settingsCardTitle {\n"
 
-    "                color: #244340;\n"
+    f"                color: {_t.TEXT_SECTION};\n"
 
-    "                font-size: 14px;\n"
+    f"                font-size: {_t.FONT_LG}px;\n"
 
-    "                font-weight: 700;\n"
+    f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
 
-    "                padding: 4px 0;\n"
+    f"                padding: {_t.RADIUS_SM}px 0;\n"
 
     "            }\n"
 
@@ -732,15 +846,15 @@ OCR_FEEDBACK_QSS = (
 
     "            QLabel#settingsOcrFeedback {\n"
 
-    "                color: #6e8580;\n"
+    f"                color: {_t.TEXT_MUTED_ALT};\n"
 
-    "                font-size: 12px;\n"
+    f"                font-size: {_t.FONT_SM}px;\n"
 
-    "                padding: 4px 8px;\n"
+    f"                padding: {_t.RADIUS_SM}px {_t.PAD_XS}px;\n"
 
-    "                background: #f7faf9;\n"
+    f"                background: {_t.SURFACE_SUBTLE};\n"
 
-    "                border-radius: 4px;\n"
+    f"                border-radius: {_t.RADIUS_SM}px;\n"
 
     "            }\n"
 
@@ -750,109 +864,126 @@ OCR_FEEDBACK_QSS = (
 
 # 该弹层的公共下拉样式也统一放在这里。
 
-COMBO_POPUP_QSS = """
+COMBO_POPUP_QSS = f"""
 
-    QFrame#settingsComboPopup {
-
+    QFrame#settingsComboPopup {{
         background: transparent;
-
         border: none;
+    }}
 
-    }
-
-    QListWidget#settingsComboPopupList {
-
+    QListWidget#settingsComboPopupList {{
         background: transparent;
-
         border: none;
-
         outline: none;
-
         padding: 0;
+        color: {_t.TEXT_SECTION};
+    }}
 
-        color: #244340;
+    QListWidget#settingsComboPopupList::item {{
+        min-height: {_t.CONTROL_HEIGHT_COMPACT}px;
+        padding: 0 {_t.PAD_SM}px;
+        border-radius: {_t.RADIUS_MD}px;
+    }}
 
-    }
+    QListWidget#settingsComboPopupList::item:hover {{
+        background: {_t.BRAND_WASH_HOVER};
+        color: {_t.BRAND_TEXT};
+    }}
 
-    QListWidget#settingsComboPopupList::item {
+    QListWidget#settingsComboPopupList::item:selected {{
+        background: {_t.BRAND_WASH};
+        color: {_t.BRAND_TEXT};
+    }}
 
-        min-height: 34px;
-
-        padding: 0 12px;
-
-        border-radius: 6px;
-
-    }
-
-    QListWidget#settingsComboPopupList::item:hover {
-
-        background: #edf7f4;
-
-        color: #0c6e63;
-
-    }
-
-    QListWidget#settingsComboPopupList::item:selected {
-
-        background: #d6ebe5;
-
-        color: #0c6e63;
-
-    }
-
-    QListWidget#settingsComboPopupList::corner {
-
+    QListWidget#settingsComboPopupList::corner {{
         width: 0;
-
         height: 0;
-
         background: transparent;
-
         border: none;
+    }}
 
-    }
-
-    QListWidget#settingsComboPopupList QAbstractScrollArea::corner {
-
+    QListWidget#settingsComboPopupList QAbstractScrollArea::corner {{
         background: transparent;
-
         border: none;
+    }}
 
-    }
-
-    QListWidget#settingsComboPopupList QScrollBar:vertical {
-
-        width: 6px;
-
-        margin: 4px 2px 4px 0;
-
+    QListWidget#settingsComboPopupList QScrollBar:vertical {{
+        width: {_t.GAP_SM}px;
+        margin: {_t.RADIUS_SM}px 2px {_t.RADIUS_SM}px 0;
         background: transparent;
+    }}
 
-    }
-
-    QListWidget#settingsComboPopupList QScrollBar::handle:vertical {
-
-        min-height: 20px;
-
-        border-radius: 3px;
-
-        background: #b9d3ca;
-
-    }
+    QListWidget#settingsComboPopupList QScrollBar::handle:vertical {{
+        min-height: {_t.PAD_LG}px;
+        border-radius: {_t.RADIUS_SM}px;
+        background: {_t.BRAND_TRACK};
+    }}
 
     QListWidget#settingsComboPopupList QScrollBar::add-line:vertical,
-
-    QListWidget#settingsComboPopupList QScrollBar::sub-line:vertical {
-
+    QListWidget#settingsComboPopupList QScrollBar::sub-line:vertical {{
         height: 0;
-
         border: none;
-
         background: transparent;
-
-    }
+    }}
 
 """
+
+# 通用列表控件：设置页与任务管理页共用同一 objectName，
+# 因此样式必须放在这里——放在任一页面的样式表里，另一页就取不到。
+
+LIST_QSS = (
+
+    "            QListWidget#settingsTaskList {\n"
+
+    f"                background: {_t.SURFACE_SUBTLE};\n"
+
+    f"                border: 1px solid {_t.BORDER_SOFT};\n"
+
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
+
+    f"                padding: {_t.RADIUS_SM}px;\n"
+
+    "                outline: 0;\n"
+
+    "            }\n"
+
+    "            QListWidget#settingsTaskList::item {\n"
+
+    f"                background: {_t.SURFACE_SUBTLE};\n"
+
+    f"                border: 1px solid {_t.BORDER_SOFT};\n"
+
+    f"                border-radius: {_t.RADIUS_MD}px;\n"
+
+    f"                padding: {_t.PAD_SM}px {_t.GAP_LG}px;\n"
+
+    f"                color: {_t.TEXT_SECTION};\n"
+
+    f"                margin-bottom: {_t.RADIUS_SM}px;\n"
+
+    "            }\n"
+
+    "            QListWidget#settingsTaskList::item:hover {\n"
+
+    f"                background: {_t.BRAND_WASH_HOVER};\n"
+
+    f"                border-color: {_t.BRAND_LINE_SOFT};\n"
+
+    "            }\n"
+
+    "            QListWidget#settingsTaskList::item:selected {\n"
+
+    f"                background: {_t.BRAND_FILL};\n"
+
+    f"                border: 1px solid {_t.BRAND_LINE};\n"
+
+    f"                color: {_t.BRAND_TEXT};\n"
+
+    "                outline: none;\n"
+
+    "            }\n"
+
+)
 
 # ====================================================== 中文消息框
 # 原 free_app/message_box.py，逐字并入。
@@ -929,7 +1060,7 @@ class QMessageBox(_QtMessageBox):
 
         for button in box.buttons():
 
-            button.setObjectName("messageBoxAction")
+            button.setObjectName(BUTTON_DIALOG)
 
         box.setStyleSheet(_s.MESSAGE_BOX_QSS)
 
@@ -1025,9 +1156,9 @@ def confirm(
 
     )
 
-    cancel_button.setObjectName("messageBoxAction")
+    cancel_button.setObjectName(BUTTON_DIALOG)
 
-    confirm_button.setObjectName("messageBoxAction")
+    confirm_button.setObjectName(BUTTON_DIALOG)
 
     confirm_button.setDefault(True)
 
@@ -1044,28 +1175,22 @@ def confirm(
 
 # --------------------------------------------------------------- 尺寸尺度
 
-# 成排按钮的统一高度：主页动作栏、二级页面页头工具按钮、对话框底栏都用它。
-# 高度交给样式表（``min-height``）决定，按钮本身不锁死高度。
-ROW_BUTTON_HEIGHT = 40
+# 尺寸常量统一由 ``ui_tokens`` 定义；这里转出，保持既有 ``_s.XXX`` 引用可用。
+# 已不再区分"主页动作栏"与"二级页面"两套高度——全项目按钮同一几何。
 
-# 主页动作栏按钮宽度（任务管理 / 执行全部 / 执行 / 刷新）。
-# 只定宽、不锁高：四个按钮同宽，执行状态切换只改文字不改几何，整排不会跳动。
-MAIN_ACTION_BUTTON_WIDTH = 128
+ROW_BUTTON_HEIGHT = CONTROL_HEIGHT
 
-# 主页齿轮按钮（图标按钮）的宽度；高度与同一排的文字按钮一致。
-MAIN_ICON_BUTTON_WIDTH = 48
+MAIN_ACTION_BUTTON_WIDTH = BUTTON_WIDTH
 
-# 二级页面页头工具按钮宽度（显示坐标 / 获取包名 / 抓取 UI 树 / 查看 JSON）。
-TOOL_BUTTON_WIDTH = 108
+MAIN_ICON_BUTTON_WIDTH = BUTTON_WIDTH_ICON
 
-# 二级页面页头"返回"按钮宽度。
-BACK_BUTTON_WIDTH = 74
+TOOL_BUTTON_WIDTH = BUTTON_WIDTH_NARROW
 
-# 需要容纳较长中文的次级按钮最小宽度（"发送测试邮件"等）。
-WIDE_BUTTON_MIN_WIDTH = 120
+BACK_BUTTON_WIDTH = BUTTON_WIDTH_BACK
 
-# 表单里小号下拉框的宽度（执行次数、下载源等）。
-OUTLINE_COMBO_WIDTH = 130
+WIDE_BUTTON_MIN_WIDTH = BUTTON_MIN_WIDTH_WIDE
+
+OUTLINE_COMBO_WIDTH = COMBO_WIDTH_NARROW
 
 # ------------------------------------------------------------------ 样式表
 
@@ -1077,11 +1202,11 @@ PAGE_TITLE_QSS = (
 
     "            QLabel#settingsPageTitle {\n"
 
-    "                color: #203637;\n"
+    f"                color: {_t.TEXT_HEADING};\n"
 
-    "                font-size: 22px;\n"
+    f"                font-size: {_t.FONT_TITLE}px;\n"
 
-    "                font-weight: 750;\n"
+    f"                font-weight: {_t.WEIGHT_BOLD};\n"
 
     "            }\n"
 
@@ -1145,16 +1270,19 @@ def secondary_button(
 
     *,
 
-    width: int | None = TOOL_BUTTON_WIDTH,
+    width: int | None = BUTTON_WIDTH_NARROW,
 
-    object_name: str | None = "secondaryButton",
+    object_name: str | None = BUTTON_SECONDARY,
 
 ) -> QPushButton:
 
-    """浅绿次要按钮：**只定宽，高度交给样式表**（``min-height``）。
+    """次要按钮（浅绿）：只定宽，高度交给样式表。
 
     全项目成排按钮都用这一种构造，因此主页动作栏、二级页头、对话框底栏的
-    按钮高度天然一致；``width=None`` 表示连宽度也不锁（对话框"取消"等按文字走）。
+    按钮几何天然一致；``width=None`` 表示连宽度也不锁（对话框"取消"等按文字走）。
+
+    对于需要"选中态"的工具按钮（如主页的「显示坐标」），把 ``checkable``
+    打开即可——选中态样式已并入同一角色（``:checked``），不必另建 objectName。
 
     """
 
@@ -1166,7 +1294,7 @@ def primary_button(
 
     *,
 
-    object_name: str | None = "primaryButton",
+    object_name: str | None = BUTTON_PRIMARY,
 
     minimum_height: int | None = None,
 
@@ -1174,9 +1302,8 @@ def primary_button(
 
     """主操作按钮（绿色渐变），并设为对话框默认按钮。
 
-    ``minimum_height`` 默认交给 QSS（``min-height: 40px``）决定，与合并前
-
-    的手工写法一致；需要额外约束的调用方自行传入。
+    ``minimum_height`` 默认交给 QSS（``min-height``）决定；
+    需要额外约束的调用方自行传入。
 
     """
 
@@ -1196,7 +1323,7 @@ def outline_button(
 
     *,
 
-    object_name: str | None = "secondaryButton",
+    object_name: str | None = BUTTON_SECONDARY,
 
     minimum_width: int | None = None,
 
@@ -1204,11 +1331,11 @@ def outline_button(
 
 ) -> QPushButton:
 
-    """表单里的小号次要按钮（"浏览" / "刷新实例" / "测试识别"）。
+    """表单里的次要按钮（"浏览" / "刷新实例" / "测试识别"）。
 
-    默认高度交给 QSS（``min-height: 40px``）；``minimum_width`` 用于兜底，
-
-    避免较长中文标签在缩放分辨率下被裁切。
+    与 :func:`secondary_button` 同角色、同几何；``minimum_width`` 用于兜底，
+    避免较长中文标签在缩放分辨率下被裁切。保留本函数是因为调用点很多，
+    它表达的"表单行内按钮"意图比几何差异更清楚。
 
     """
 
@@ -1229,8 +1356,7 @@ def danger_button(
     text: str,
 
     *,
-
-    object_name: str | None = "dangerButton",
+    object_name: str | None = BUTTON_DANGER,
 
     minimum_width: int | None = None,
 
@@ -1246,6 +1372,36 @@ def danger_button(
 
     return button
 
+def run_button(
+
+    text: str,
+
+    *,
+    width: int | None = None,
+
+    object_name: str | None = BUTTON_RUN,
+
+) -> QPushButton:
+
+    """运行按钮（蓝色实心）：用于"运行 / 试运行"这类与保存区分开的操作。"""
+
+    return _make_button(text, object_name, None, None, width)
+
+def stop_button(
+
+    text: str,
+
+    *,
+    width: int | None = None,
+
+    object_name: str | None = BUTTON_STOP,
+
+) -> QPushButton:
+
+    """停止按钮（红色渐变）：主页"停止"与调试视图"停止"共用同一角色。"""
+
+    return _make_button(text, object_name, None, None, width)
+
 def back_button() -> QPushButton:
 
     """构造页头"返回"按钮；点击行为由调用方连接。
@@ -1253,7 +1409,7 @@ def back_button() -> QPushButton:
     与同排其它按钮一样只定宽，高度由样式表决定。
     """
 
-    return _make_button("返回", "quietButton", None, None, BACK_BUTTON_WIDTH)
+    return _make_button("返回", BUTTON_NEUTRAL, None, None, BACK_BUTTON_WIDTH)
 
 # --------------------------------------------------------------- 标签/页头
 
@@ -1319,9 +1475,9 @@ def dialog_action_row(
 
     save_text: str = "保存",
 
-    cancel_name: str = "settingsCancelButton",
+    cancel_name: str = BUTTON_NEUTRAL,
 
-    save_name: str = "settingsSaveButton",
+    save_name: str = BUTTON_PRIMARY,
 
     spacing: int = 10,
 

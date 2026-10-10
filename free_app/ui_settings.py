@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import ui_tokens as _t
 from .background_task import BackgroundTaskOwner
 from .config import (
     DEFAULT_CLEANUP_MODE,
@@ -92,6 +93,7 @@ from .trash import clear_output_files
 from .ui_common import (
     CARD_TITLE_QSS,
     COMMON_CONTROLS_QSS,
+    LIST_QSS,
     MESSAGE_BOX_QSS,
     OCR_FEEDBACK_QSS,
     OUTLINE_COMBO_WIDTH,
@@ -114,6 +116,7 @@ from .ui_common import (
     refresh_style,
     scrollable_page,
 )
+from .ui_tokens import BUTTON_SECONDARY
 
 # 页面内容区边距：与任务管理页的页头左右留白保持一致。
 CONTENT_MARGINS = (28, 22, 28, 22)
@@ -521,7 +524,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         # 若最后一两个字被截断会显得变形）。
         self.test_button = outline_button(
             "发送测试邮件",
-            object_name="settingsTestButton",
+            object_name=BUTTON_SECONDARY,
             minimum_width=WIDE_BUTTON_MIN_WIDTH,
         )
         self.test_button.clicked.connect(self._send_test_email)
@@ -605,7 +608,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         mumu_folder_row.setSpacing(8)
         mumu_folder_row.addWidget(self.mumu_directory_edit, 1)
         self.mumu_browse_button = outline_button(
-            "浏览", object_name="settingsBrowseButton"
+            "浏览", object_name=BUTTON_SECONDARY
         )
         self.mumu_browse_button.clicked.connect(self._browse_mumu_directory)
         mumu_folder_row.addWidget(self.mumu_browse_button)
@@ -626,7 +629,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.mumu_vm_index_combo.setMinimumWidth(180)
         instance_row.addWidget(self.mumu_vm_index_combo, 1)
         self.mumu_refresh_button = outline_button(
-            "刷新实例", object_name="settingsBrowseButton"
+            "刷新实例", object_name=BUTTON_SECONDARY
         )
         self.mumu_refresh_button.clicked.connect(self._refresh_mumu_instances)
         instance_row.addWidget(self.mumu_refresh_button)
@@ -789,7 +792,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         )
         row_layout.addWidget(state_label)
 
-        reset_button = outline_button("重置", object_name="settingsModelAction")
+        reset_button = outline_button("重置", object_name=BUTTON_SECONDARY)
         reset_button.clicked.connect(
             lambda _checked=False, tid=task_id: self._reset_completion(tid)
         )
@@ -874,11 +877,11 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self.ocr_feedback_label.setObjectName("settingsOcrFeedback")
         ocr_header.addWidget(self.ocr_feedback_label)
         self.test_ocr_button = outline_button(
-            "测试识别", object_name="settingsTestButton"
+            "测试识别", object_name=BUTTON_SECONDARY
         )
         self.test_ocr_button.clicked.connect(self._test_ocr)
         self.refresh_ocr_button = outline_button(
-            "刷新", object_name="settingsTestButton"
+            "刷新", object_name=BUTTON_SECONDARY
         )
         self.refresh_ocr_button.clicked.connect(self._refresh_model_status)
         ocr_header.addWidget(self.test_ocr_button)
@@ -1012,7 +1015,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         row.addWidget(size_label)
 
         # 模型卡上的"下载/取消"按钮：沿用既有 objectName 的次要按钮。
-        action_button = outline_button("下载", object_name="settingsModelAction")
+        action_button = outline_button("下载", object_name=BUTTON_SECONDARY)
         action_button.clicked.connect(
             lambda _checked=False, n=name: self._toggle_model_action(n)
         )
@@ -1681,11 +1684,11 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
     def _style_sheet() -> str:
         return (
             "\n"
-            "            QDialog { background: #f2f6f4; color: #193331; }\n"
+            f"            QDialog {{ background: {_t.SURFACE_PAGE_ALT}; color: {_t.TEXT}; }}\n"
             "            QFrame#settingsNavPanel {\n"
-            "                background: #e8f0ed;\n"
-            "                border: 1px solid #d1e0db;\n"
-            "                border-radius: 10px;\n"
+            f"                background: {_t.SURFACE_SECTION};\n"
+            f"                border: 1px solid {_t.BORDER_SOFT};\n"
+            f"                border-radius: {_t.RADIUS_LG}px;\n"
             "            }\n"
             "            QListWidget#settingsNav {\n"
             "                background: transparent;\n"
@@ -1696,19 +1699,19 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "            QListWidget#settingsNav::item {\n"
             "                min-height: 44px;\n"
             "                border: 1px solid transparent;\n"
-            "                border-radius: 7px;\n"
-            "                padding: 0 10px;\n"
-            "                color: #48615f;\n"
-            "                font-weight: 600;\n"
+            f"                border-radius: {_t.RADIUS_MD}px;\n"
+            f"                padding: 0 {_t.GAP_MD}px;\n"
+            f"                color: {_t.TEXT_LABEL};\n"
+            f"                font-weight: {_t.WEIGHT_MEDIUM};\n"
             "            }\n"
             "            QListWidget#settingsNav::item:hover {\n"
-            "                background: #dcebe6;\n"
-            "                color: #146e65;\n"
+            f"                background: {_t.BRAND_WASH_PRESSED};\n"
+            f"                color: {_t.BRAND_TEXT_SOFT};\n"
             "            }\n"
             "            QListWidget#settingsNav::item:selected {\n"
-            "                background: #d4e9e3;\n"
-            "                color: #0c6e63;\n"
-            "                font-weight: 700;\n"
+            f"                background: {_t.BRAND_WASH};\n"
+            f"                color: {_t.BRAND_TEXT};\n"
+            f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
             "                outline: none;\n"
             "            }\n"
             "            QStackedWidget#settingsStack {\n"
@@ -1716,130 +1719,111 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "                border: none;\n"
             "            }\n"
             "            QFrame#settingsTabPage { background: transparent; }\n"
-            "            QListWidget#settingsTaskList {\n"
-            "                background: #fbfdfc;\n"
-            "                border: 1px solid #dbe7e2;\n"
-            "                border-radius: 6px;\n"
-            "                padding: 4px;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList::item {\n"
-            "                padding: 5px 8px;\n"
-            "                border-radius: 4px;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList::item:selected {\n"
-            "                background: #d4e9e3;\n"
-            "                color: #0c6e63;\n"
-            "                outline: none;\n"
+            + LIST_QSS
+            # 设置页里的列表比任务管理页紧凑，覆盖公共 LIST_QSS 的项内边距。
+            + "            QListWidget#settingsTaskList::item {\n"
+            f"                padding: 5px {_t.PAD_XS}px;\n"
+            f"                border-radius: {_t.RADIUS_SM}px;\n"
             "            }\n"
             "            QFrame#settingsOptionCard {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #cbdcd6;\n"
-            "                border-radius: 9px;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
+            f"                border: 1px solid {_t.BORDER};\n"
+            f"                border-radius: {_t.RADIUS_LG}px;\n"
             "            }\n"
             "            QFrame#settingsModelRow {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #cbdcd6;\n"
-            "                border-radius: 8px;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
+            f"                border: 1px solid {_t.BORDER};\n"
+            f"                border-radius: {_t.RADIUS_MD}px;\n"
             "            }\n"
             "            QFrame#settingsModelRow:hover {\n"
-            "                background: #f5faf8;\n"
-            "                border-color: #91c5b9;\n"
+            f"                background: {_t.SURFACE_SUBTLE};\n"
+            f"                border-color: {_t.BRAND_LINE_HOVER};\n"
             "            }\n"
             "            QFrame#settingsRetryRow {\n"
-            "                background: #f8fbfa;\n"
-            "                border: 1px solid #e0ebe7;\n"
-            "                border-radius: 7px;\n"
+            f"                background: {_t.SURFACE_SUBTLE};\n"
+            f"                border: 1px solid {_t.BORDER_SOFT};\n"
+            f"                border-radius: {_t.RADIUS_MD}px;\n"
             "            }\n"
             "            QFrame#settingsRetryRow:hover {\n"
-            "                background: #f1f8f5;\n"
-            "                border-color: #a9d2c7;\n"
+            f"                background: {_t.BRAND_WASH_HOVER};\n"
+            f"                border-color: {_t.BRAND_LINE_SOFT};\n"
             "            }\n"
             "            QScrollArea#settingsScroll {\n"
             "                background: transparent;\n"
             "                border: none;\n"
             "            }\n"
             "            QLabel#settingsSectionTitle {\n"
-            "                color: #193331;\n"
-            "                font-size: 18px;\n"
-            "                font-weight: 750;\n"
+            f"                color: {_t.TEXT};\n"
+            f"                font-size: {_t.FONT_XL}px;\n"
+            f"                font-weight: {_t.WEIGHT_BOLD};\n"
             "            }\n"
             "            QLabel#settingsSectionSubtitle {\n"
-            "                color: #758986;\n"
-            "                font-size: 12px;\n"
+            f"                color: {_t.TEXT_MUTED_ALT};\n"
+            f"                font-size: {_t.FONT_SM}px;\n"
             "            }\n"
             "            QLabel#settingsSectionNote {\n"
-            "                color: #758986;\n"
-            "                font-size: 11px;\n"
+            f"                color: {_t.TEXT_MUTED_ALT};\n"
+            f"                font-size: {_t.FONT_XS}px;\n"
             "            }\n"
             + CARD_TITLE_QSS
             + "            QLabel#settingsGroupTitle {\n"
-            "                color: #244340;\n"
-            "                font-size: 13px;\n"
-            "                font-weight: 700;\n"
+            f"                color: {_t.TEXT_SECTION};\n"
+            f"                font-size: {_t.FONT_MD}px;\n"
+            f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
             "            }\n"
             "            QLabel#settingsRunLabel {\n"
-            "                color: #193331;\n"
-            "                font-size: 13px;\n"
-            "                font-weight: 600;\n"
+            f"                color: {_t.TEXT};\n"
+            f"                font-size: {_t.FONT_MD}px;\n"
+            f"                font-weight: {_t.WEIGHT_MEDIUM};\n"
             "            }\n"
             "            QLabel#settingsRetryId {\n"
-            "                color: #718783;\n"
-            "                font-size: 12px;\n"
+            f"                color: {_t.TEXT_MUTED};\n"
+            f"                font-size: {_t.FONT_SM}px;\n"
             "                min-width: 100px;\n"
             "            }\n"
             "            QLabel#settingsCompletionState {\n"
-            "                font-size: 12px;\n"
-            "                font-weight: 600;\n"
+            f"                font-size: {_t.FONT_SM}px;\n"
+            f"                font-weight: {_t.WEIGHT_MEDIUM};\n"
             "                min-width: 150px;\n"
             "            }\n"
-            "            QLabel#settingsCompletionState[state=\"done\"] {\n"
-            "                color: #1f7a4c;\n"
+            '            QLabel#settingsCompletionState[state="done"] {\n'
+            f"                color: {_t.SUCCESS_TEXT_ALT};\n"
             "            }\n"
-            "            QLabel#settingsCompletionState[state=\"stale\"] {\n"
-            "                color: #9a6a24;\n"
+            '            QLabel#settingsCompletionState[state="stale"] {\n'
+            f"                color: {_t.WARN_TEXT_DEEP};\n"
             "            }\n"
-            "            QLabel#settingsCompletionState[state=\"pending\"] {\n"
-            "                color: #718783;\n"
+            '            QLabel#settingsCompletionState[state="pending"] {\n'
+            f"                color: {_t.TEXT_MUTED};\n"
             "            }\n"
             "            QFormLayout QLabel {\n"
-            "                color: #49615f;\n"
-            "                font-size: 13px;\n"
+            f"                color: {_t.TEXT_LABEL};\n"
+            f"                font-size: {_t.FONT_MD}px;\n"
             "            }\n"
             "            QFrame#settingsFooter {\n"
-            "                border-top: 1px solid #cbdcd6;\n"
+            f"                border-top: 1px solid {_t.BORDER};\n"
             "            }\n"
             "            QRadioButton#settingsModelRadio {\n"
-            "                color: #31504d;\n"
-            "                font-size: 13px;\n"
-            "                spacing: 6px;\n"
+            f"                color: {_t.TEXT_BUTTON};\n"
+            f"                font-size: {_t.FONT_MD}px;\n"
+            f"                spacing: {_t.GAP_SM}px;\n"
             "            }\n"
             "            QRadioButton#settingsModelRadio::indicator {\n"
             "                width: 15px;\n"
             "                height: 15px;\n"
-            "                border: 1px solid #9bb9b1;\n"
-            "                border-radius: 8px;\n"
-            "                background: #ffffff;\n"
+            f"                border: 1px solid {_t.BORDER_STRONG};\n"
+            f"                border-radius: {_t.RADIUS_MD}px;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
             "            }\n"
             "            QRadioButton#settingsModelRadio::indicator:hover {\n"
-            "                border-color: #2b9b8b;\n"
+            f"                border-color: {_t.BRAND_LIGHT};\n"
             "            }\n"
             "            QRadioButton#settingsModelRadio::indicator:checked {\n"
-            "                border: 1px solid #138277;\n"
-            "                border-radius: 8px;\n"
-            "                background: #138277;\n"
+            f"                border: 1px solid {_t.BRAND};\n"
+            f"                border-radius: {_t.RADIUS_MD}px;\n"
+            f"                background: {_t.BRAND};\n"
             "            }\n"
             + OCR_FEEDBACK_QSS
-            + "            QLabel#settingsModelSize { color: #718783; font-size: 12px; min-width: 62px; }\n"
-            "            QPushButton#settingsModelAction {\n"
-            "                min-height: 32px;\n"
-            "                min-width: 76px;\n"
-            "                padding: 0 13px;\n"
-            "            }\n"
-            "            QPushButton#settingsModelAction:disabled {\n"
-            "                color: #9db3af;\n"
-            "                background: #f0f5f3;\n"
-            "                border-color: #dbe8e4;\n"
-            "            }\n"
+            + f"            QLabel#settingsModelSize {{ color: {_t.TEXT_MUTED}; font-size: {_t.FONT_SM}px; min-width: 62px; }}\n"
             + MESSAGE_BOX_QSS
             + SCROLLBAR_QSS
             + COMMON_CONTROLS_QSS

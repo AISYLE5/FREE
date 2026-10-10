@@ -106,6 +106,9 @@ FREE/
 │  └─ actions/*.json              #   复合动作库定义
 ├─ free_app/                      # 核心包（见第 4 节各层）
 ├─ tests/                         # 单元测试，与 free_app 模块一一对应
+├─ demo/                          # 界面样式总览（开发辅助，不参与运行）
+│  ├─ styles.py                   #   python demo\styles.py [--probe]
+│  └─ STYLE_GUIDE.md              #   界面样式清单（Demo 的配套文档）
 ├─ logs/                          # 运行日志（运行时生成）
 ├─ models/                        # OCR 模型（设置页下载，运行时生成）
 ├─ screenshots/                   # 动作/失败/关键页截图（运行时生成）
@@ -118,7 +121,8 @@ FREE/
 
 | 模块 | 职责 |
 | --- | --- |
-| `ui_common.py` | 各 UI 模块共享的元素（原 `styles.py` + `message_box.py` + `ui_common.py`）：QSS 片段与页面级前缀 `PAGE_BASE_QSS`（片段仍按 `_s.XXX` 引用，`_s` 指向本模块）；中文消息框 `QMessageBox` / `confirm()`；按钮工厂 `secondary_button` / `primary_button` / `outline_button` / `danger_button` / `back_button`——**全项目所有 `QPushButton` 都经这里创建**，尺寸只由本模块常量决定（`MAIN_ACTION_BUTTON_SIZE` 主页动作栏整排同尺寸、`TOOL_BUTTON_WIDTH` 二级页头工具按钮、`BACK_BUTTON_SIZE` 返回、`ROW_BUTTON_HEIGHT` 成排按钮高度）；`page_title` / `card_title` / `page_header`；`dialog_action_row`；`scrollable_page` + `mount_scrollable_page`；`expanding`；`refresh_style`；共享控件 `ElidedLabel` / `SettingsComboBox` / `ExecutionCountComboBox` / `ModelRowCard` / `confirm_dialog` |
+| `ui_common.py` | 各 UI 模块共享的元素（原 `styles.py` + `message_box.py` + `ui_common.py`）：QSS 片段与页面级前缀 `PAGE_BASE_QSS`；**全部取值来自 `ui_tokens`**。中文消息框 `QMessageBox` / `confirm()`；按钮工厂——**全项目所有 `QPushButton` 都经这里创建**，按六个语义角色构造（`secondary_button` / `primary_button` / `outline_button` / `neutral`(back_button) / `danger_button` / `run_button` / `stop_button`），几何统一由样式表决定（`CONTROL_HEIGHT`=40px）；`page_title` / `card_title` / `page_header`；`dialog_action_row`；`scrollable_page` + `mount_scrollable_page`；`expanding`；`refresh_style`；共享控件 `ElidedLabel` / `SettingsComboBox` / `ExecutionCountComboBox` / `ModelRowCard` / `confirm_dialog` |
+| `ui_tokens.py` | **设计令牌**：全项目唯一的颜色、圆角、字号、字重、间距与按钮角色来源。只放取值——不导入 Qt、不含 QSS 选择器。四个界面模块都从这里取值，因此"界面一共用了多少种颜色/尺寸"是一份可读完的清单 |
 | `ui_main.py` | `MainPage` + `MainWindow` + GUI 入口（原 `ui_main.py` + `main_window.py` + `main.py`）。`MainPage`：主页，只有三块内容——任务顺序列表（拖拽排序，行内显示序号/名称/状态/动作数）、页头（品牌/标题/副标题、设备状态徽标与探测 `probe_device_status`、4 个等宽按钮 + 齿轮）、右侧运行日志面板，另有 `build_app_icon()`；跨页操作以信号发出（`start_*_requested` / `settings_requested` / `task_manager_requested` …）。`MainWindow`：窗口容器，窗口底色/固定尺寸、`QStackedWidget` 三页切换、把 `TaskWorker` / `BatchTaskWorker` 移到 `QThread`、汇总结果、把运行日志写入 `logs/run_<时间戳>.log`、退出确认与收尾；同时持有 `completions_path`，在任务成功后记录「今日完成」（见 5.3），并在「执行全部」时按 `respect_today_completion` 过滤。页面控件访问经 `__getattr__` 转发。`main()` / `default_base_directory()`：GUI 入口。运行状态与进度没有对应控件：结果只反映在任务列表状态、状态栏消息与运行日志上 |
 | `ui_settings.py` | `SettingsPage` + `SettingsDialog` + `ModelDownloadWorker`（原 `ui_settings.py` + `settings_dialog.py`）：设置页面外壳（页头 + 内容区）、MuMu/ADB 路径、执行与清理、重试、今日完成、OCR 模型选择与下载管理、SMTP 邮件的分页设置；`_FieldBinding` 一张表驱动控件的读取/写入/收集，保存经 `config.update_settings()` 单点读-改-写。「今日完成」分页直接读写 `task_completions.py` 的记录文件（逐任务 / 整体重置），不受「取消保存」影响 |
 | `ui_task_manager.py` | `TaskManagerPage` + `TaskManagerWidget` + 查看器 + 动作表单（原 `ui_task_manager.py` + `task_manager.py` + `task_viewers.py` + `action_editor_dialogs.py`）：任务管理页外壳（页头工具按钮「显示坐标 / 获取包名 / 抓取 UI 树 / 查看 JSON」+ 返回）、内嵌编辑器的惰性创建与信号接线、"获取包名"Toast；任务与复合动作的可视化编辑（`_EntryListPanel` 规格对象驱动两个名称列表页、`_EmbeddedNavigator` 收敛内嵌导航状态）、JSON 预览、单步骤试运行；三个嵌入查看器（`JsonViewerWidget` / `RunViewerWidget` / `UiTreeDumpWidget`）与 UI 树后台抓取 worker；由 `action_schema.ParamSpec` 驱动的动作参数表单（`ActionEditorWidget`）与步骤列表编辑器（`ActionListEditorWidget`） |
@@ -312,7 +316,12 @@ sequenceDiagram
 
 - **单一校验边界**：设置文件只经 `load_settings()` 清洗、动作参数只经 `validate_action_params()` 校验、完成记录只经 `sanitize_completions()` 清洗，下游一律信任已解析的类型，杜绝“每一层各写一套宽容回退”；不兼容旧字段/旧写法（如 click 的裸字符串 `text`、`recipients` 字符串、`cleanup_after_task` 的 `None`/`""`）已彻底移除。
 - **配置与状态分离**：`settings.json` / `tasks/*.json` 是用户配置（经白名单清洗、走"取消/保存"语义）；`task_completions.json` 是运行时状态（按格式校验、立即生效、可随时重建）。二者不共用一套读写与校验路径，避免"重置完成时间"被"取消保存"回滚，也避免配置清洗层承担状态文件的容错。
-- **一个页面一个文件，共享元素只留一处**：主页/设置页/任务管理页分别是 `ui_main.MainPage`、`ui_settings.SettingsPage`、`ui_task_manager.TaskManagerPage`，各自 `_apply_style()` 只写自己的例外规则；跨模块重复的样式、按钮尺寸与 `objectName` 组合、页头元素、滚动容器骨架只允许出现在 `ui_common.py`（设置/任务管理/动作编辑/查看器同样从那里取控件工厂）。判定标准是"同一种外观是否需要写第二遍"，而不是"看起来像不像"：主页动作栏按钮高 48px、二级页面与对话框成排按钮高 40px，这类有意的层级差异保留为不同常量，不做强行归一。窗口级别的东西（窗口底色、固定尺寸、页面切换、线程与运行编排）不下沉到页面。页面不反向导入 `main_window`。
+- **一个页面一个文件，共享元素只留一处**：主页/设置页/任务管理页分别是 `ui_main.MainPage`、`ui_settings.SettingsPage`、`ui_task_manager.TaskManagerPage`，各自 `_apply_style()` 只写自己的例外规则；跨模块重复的样式、按钮几何与 `objectName` 组合、页头元素、滚动容器骨架只允许出现在 `ui_common.py`。窗口级别的东西（窗口底色、固定尺寸、页面切换、线程与运行编排）不下沉到页面。页面不反向导入 `main_window`。
+- **样式取值单一来源（token 层）**：所有颜色、圆角、字号、字重、间距都定义在 `ui_tokens.py`，四个界面模块里**不允许出现裸色值**（可用 `grep '#[0-9a-fA-F]\{6\}'` 在 QSS 字符串行内自查；当前为 0 行）。这样的好处是"界面一共用了多少种颜色"变成一个可读完的清单，而不是散落的百余个字面量。token 层刻意不导入 Qt、不含选择器，保证它可被任何模块安全引用。
+- **按钮只有六个语义角色**：`primaryButton`（主操作，绿渐变）、`secondaryButton`（次要，浅绿）、`neutralButton`（中性/返回/取消，浅灰）、`dangerButton`（不可逆，浅红）、`runButton`（运行，蓝）、`stopButton`（停止，红渐变）。**六个角色共用同一套几何**（高度 = `CONTROL_HEIGHT` 40px、同一圆角/内边距/字重），差异只在配色——因此成排按钮天然对齐，执行状态切换只改文字不改几何、整排不跳动。角色名即 `objectName`，定义在 `ui_tokens.BUTTON_*`，QSS 与控件两侧引用同一常量，不会各写一遍字符串。
+  - 之前的 `settingsTestButton` / `settingsBrowseButton` / `settingsModelAction` / `taskManagerPointerButton` / `quietButton` / `settingsCancelButton` / `settingsSaveButton` / `taskManagerOperationSave` / `runActionButton` / `runStopButton` / `settingsTryButton` 等 12 个名字已全部删除并归入上述六角色。其中「显示坐标」的可切换行为用 `:checked` 表达（不再单独建名），模型行的「下载/删除」用 `dangerButton` 与 `secondaryButton` 两个角色切换（不再用 `[downloaded="true"]` 属性）。
+  - 归并掉的重复外观：主页与二级页各写一遍的 `[runState]` 状态色、调试视图自己一套的停止按钮红色渐变、「尝试点击」自己一套的绿色渐变（`#2b9b8b` 起步，与主按钮渐变仅差一两档）。
+- **共用 objectName 的样式必须放公共层**：`settingsTaskList` 被设置页与任务管理页共 6 个控件使用，其规则只能定义在 `ui_common.LIST_QSS`——曾放在设置页样式表里，导致任务管理页的列表项实际没有背景色（渲染成白色）。判断依据是"这个 `objectName` 是否只被一个页面使用"。
 - **固定模拟器规格**：1080×1920 / 480dpi 是硬性要求，连接后校验，避免坐标与 OCR 定位因分辨率漂移——这也是点击坐标直接落屏的前提。
 - **引擎纯逻辑化**：所有副作用（时间、ADB、日志、截图）通过构造参数注入（`sleep_function`、`log_callback`、`progress_callback`、`ocr_client`），测试用 mock 替换即可；引擎对 Qt 的唯一依赖是 `QImage` 截图校验。
 - **回调而非继承**：UI 与引擎通过信号/回调传递日志与进度，`helpers.noop_log` 提供空实现，避免大量 `if callback:` 分支。
@@ -332,6 +341,14 @@ sequenceDiagram
 - **GUI**：`test_main_window`（窗口容器：运行编排、页面切换、任务顺序持久化、日志缓冲、今日完成的记录/过滤/列表标记同步）、`test_settings_dialog`（含「今日完成」分页与横向溢出回归）、`test_task_manager`、`test_action_editor_dialogs`（均使用 `QApplication` 与 mock，不做真实设备交互）。UI 收敛为四个模块后，这些用例统一从 `ui_main` / `ui_settings` / `ui_task_manager` / `ui_common` 导入，mock 目标也随之调整（如 `free_app.ui_settings.download_model`、`free_app.ui_main.QThread`）。
 
 引擎构造参数全部可注入，是测试友好性的根本保障；新增动作时应在 `test_action_schema` 与 `test_engine` 中同时补充规格与执行路径的用例。
+
+`demo/styles.py` 是**开发辅助工具**，不在 `tests/` 覆盖范围内，也不被 `free_app` 导入（依赖方向是 demo → free_app，单向）。它自带 `--probe` 自检模式，可在不打开窗口的情况下确认"能否导入 free_app / 样式能否构建 / 中文字体是否可用"：
+
+```powershell
+python demo\styles.py --probe
+```
+
+调整样式后用它配合人工核对（或截图比对）即可；若改动涉及渲染结果，建议像本次样式统一那样先截取改动前的基准图，再逐页对比像素差异，避免"看起来差不多"掩盖真实回归。
 
 > 写 GUI 用例时注意两处易踩的坑：`MainWindow._start_all_tasks()` 会先 `_save_task_order()`，那一步从磁盘读-改-写并**替换 `window.settings`**，因此测试里改设置必须写盘后 `load_settings()` 重载，改内存字典会被覆盖；`QLayout.removeWidget()` **不会隐藏**控件（与 `QStackedWidget.removeWidget` 不同），重建行列表时必须 `setParent(None)`，否则旧行会留在原位继续绘制到 `deleteLater` 执行为止。
 

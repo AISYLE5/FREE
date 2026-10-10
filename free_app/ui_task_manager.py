@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ui_common as _s  # 样式片段现由 ui_common 提供
+from . import ui_tokens as _t
 from .action_schema import (
     ATOMIC_TYPES,
     CLICK_LOCATES,
@@ -72,6 +73,7 @@ from .models import Action, RunResult, RunStatus, TaskDefinition
 from .mumu import connect_to_mumu
 from .trash import TrashError, remove_path
 from .ui_common import (
+    LIST_QSS,
     PAGE_BASE_QSS,
     ROW_BUTTON_HEIGHT,
     TOOL_BUTTON_WIDTH,
@@ -85,7 +87,13 @@ from .ui_common import (
     outline_button,
     page_title,
     primary_button,
+    run_button,
     secondary_button,
+    stop_button,
+)
+from .ui_tokens import (
+    BUTTON_NEUTRAL,
+    BUTTON_SECONDARY,
 )
 
 # "获取包名"结果提示的显示时长（毫秒）。
@@ -128,7 +136,7 @@ class TaskManagerPage(QWidget):
 
         self.task_manager_pointer_button = secondary_button(
             "显示坐标",
-            object_name="taskManagerPointerButton",
+            object_name=BUTTON_SECONDARY,
             width=TOOL_BUTTON_WIDTH,
         )
         self.task_manager_pointer_button.setCheckable(True)
@@ -318,21 +326,21 @@ class _TaskToast(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setStyleSheet(
-            """
-            QFrame#taskToast {
-                background: #fff7f6;
-                border: 1px solid #e6aaa5;
-                border-radius: 10px;
-            }
-            QLabel#taskToastTitle {
-                color: #a3403b;
-                font-size: 13px;
-                font-weight: 700;
-            }
-            QLabel#taskToastMessage {
-                color: #5b3b3a;
-                font-size: 12px;
-            }
+            f"""
+            QFrame#taskToast {{
+                background: {_t.DANGER_FILL};
+                border: 1px solid {_t.DANGER_LINE};
+                border-radius: {_t.RADIUS_LG}px;
+            }}
+            QLabel#taskToastTitle {{
+                color: {_t.DANGER_TEXT_ALT};
+                font-size: {_t.FONT_MD}px;
+                font-weight: {_t.WEIGHT_SEMIBOLD};
+            }}
+            QLabel#taskToastMessage {{
+                color: {_t.DANGER_TEXT};
+                font-size: {_t.FONT_SM}px;
+            }}
             """
         )
         title_label = QLabel(title, self)
@@ -353,9 +361,11 @@ class _TaskToast(QFrame):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#e6aaa5"), 1.0))
-        painter.setBrush(QColor("#fff7f6"))
-        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 10, 10)
+        painter.setPen(QPen(QColor(_t.DANGER_LINE), 1.0))
+        painter.setBrush(QColor(_t.DANGER_FILL))
+        painter.drawRoundedRect(
+            self.rect().adjusted(0, 0, -1, -1), _t.RADIUS_LG, _t.RADIUS_LG
+        )
 
     def show_for_five_seconds(self) -> None:
         self._move_to_parent_corner()
@@ -708,18 +718,18 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
         operation_layout.setSpacing(8)
         # 操作条上的一排按钮：统一 78×40，样式由 objectName 决定。
         self.add_button = secondary_button(
-            "添加", width=None, object_name="settingsTestButton"
+            "添加", width=None, object_name=BUTTON_SECONDARY
         )
         self.add_button.clicked.connect(self._add_current)
         self.copy_button = secondary_button(
-            "复制", width=None, object_name="settingsTestButton"
+            "复制", width=None, object_name=BUTTON_SECONDARY
         )
         self.copy_button.clicked.connect(self._duplicate_current)
         self.delete_button = danger_button("删除", minimum_width=None)
         self.delete_button.clicked.connect(self._delete_current)
-        self.run_action_button = outline_button("运行", object_name="runActionButton")
+        self.run_action_button = run_button("运行")
         self.run_action_button.clicked.connect(self._run_current)
-        self.cancel_button = outline_button("取消", object_name="quietButton")
+        self.cancel_button = outline_button("取消", object_name=BUTTON_NEUTRAL)
         self.cancel_button.clicked.connect(self._cancel_current_editor)
         for button in (
             self.add_button,
@@ -736,9 +746,7 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
         self.dirty_label = QLabel("未保存")
         self.dirty_label.setObjectName("taskManagerDirtyLabel")
         operation_layout.addWidget(self.dirty_label)
-        self.save_button = primary_button(
-            "保存", object_name="taskManagerOperationSave"
-        )
+        self.save_button = primary_button("保存")
         self.save_button.setMinimumHeight(ROW_BUTTON_HEIGHT)
         self.save_button.clicked.connect(self._save_current)
         operation_layout.addWidget(self.save_button)
@@ -2381,60 +2389,42 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
 
     @staticmethod
     def _style_sheet() -> str:
+        # 列表项（settingsTaskList）的样式来自 ui_common.LIST_QSS——
+        # 该 objectName 由设置页与任务管理页共用，样式必须放在公共层，
+        # 否则放到任一页面里另一页就取不到。
         return (
             "\n"
             + _s.PANEL_BASE_QSS
-            + "            QDialog { background: #f2f6f4; color: #193331; }\n"
+            + LIST_QSS
+            + f"            QDialog {{ background: {_t.SURFACE_PAGE_ALT}; color: {_t.TEXT}; }}\n"
             "            QFrame#taskManagerLeftPanel {\n"
-            "                background: #ffffff;\n"
-            "                border: 1px solid #e0e9e6;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
+            f"                border: 1px solid {_t.BORDER_SOFT};\n"
             "                border-radius: 0;\n"
             "            }\n"
             "            QFrame#taskManagerEditorPanel {\n"
-            "                background: #ffffff;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
             "                border: none;\n"
             "                border-radius: 0;\n"
             "            }\n"
             "            QFrame#taskManagerRightPanel {\n"
-            "                background: #ffffff;\n"
+            f"                background: {_t.SURFACE_CARD};\n"
             "            }\n"
             "            QLabel#taskManagerDirtyLabel {\n"
-            "                color: #a06b1e;\n"
-            "                font-size: 11px;\n"
-            "                font-weight: 650;\n"
+            f"                color: {_t.WARN_TEXT_ALT};\n"
+            f"                font-size: {_t.FONT_XS}px;\n"
+            f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
             "                padding: 0 2px;\n"
             "            }\n"
             "            QFrame#taskManagerHLine {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #d9e5e1, stop:0.5 #b9d3ca, stop:1 #d9e5e1);\n"
+            "                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            f"stop:0 {_t.BORDER_SOFT}, stop:0.5 {_t.BRAND_TRACK}, stop:1 {_t.BORDER_SOFT});\n"
             "                border: none;\n"
             "            }\n"
             "            QFrame#taskManagerVLine {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d9e5e1, stop:0.5 #b9d3ca, stop:1 #d9e5e1);\n"
+            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            f"stop:0 {_t.BORDER_SOFT}, stop:0.5 {_t.BRAND_TRACK}, stop:1 {_t.BORDER_SOFT});\n"
             "                border: none;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList {\n"
-            "                background: transparent;\n"
-            "                border: 0;\n"
-            "                outline: 0;\n"
-            "                padding: 4px 2px;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList::item {\n"
-            "                background: #f7faf9;\n"
-            "                border: 1px solid #e0e9e6;\n"
-            "                border-radius: 8px;\n"
-            "                padding: 12px 14px;\n"
-            "                color: #2a4243;\n"
-            "                margin-bottom: 4px;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList::item:hover {\n"
-            "                background: #edf7f4;\n"
-            "                border-color: #a8d5cc;\n"
-            "            }\n"
-            "            QListWidget#settingsTaskList::item:selected {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #dff2ed, stop:1 #d0ebe4);\n"
-            "                border: 1px solid #65b3a7;\n"
-            "                color: #0f625b;\n"
-            "                outline: none;\n"
             "            }\n"
             "            QTabWidget#taskManagerTabs::pane {\n"
             "                border: none;\n"
@@ -2442,29 +2432,29 @@ class TaskManagerWidget(BackgroundTaskOwner, QWidget):
             "            }\n"
             "            QTabBar::tab {\n"
             "                background: transparent;\n"
-            "                color: #49615f;\n"
-            "                padding: 10px 12px;\n"
+            f"                color: {_t.TEXT_LABEL};\n"
+            f"                padding: {_t.GAP_MD}px {_t.PAD_SM}px;\n"
             "                border-bottom: 3px solid transparent;\n"
-            "                font-weight: 650;\n"
+            f"                font-weight: {_t.WEIGHT_SEMIBOLD};\n"
             "                min-width: 100px;\n"
             "            }\n"
             "            QTabBar::tab:selected {\n"
-            "                color: #0c6e63;\n"
-            "                border-bottom: 3px solid #137f73;\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f7faf9, stop:1 #edf7f4);\n"
+            f"                color: {_t.BRAND_TEXT};\n"
+            f"                border-bottom: 3px solid {_t.BRAND};\n"
+            f"                background: {_t.BRAND_WASH_HOVER};\n"
             "            }\n"
             "            QTabBar::tab:hover {\n"
-            "                color: #0c6e63;\n"
-            "                background: #f7faf9;\n"
+            f"                color: {_t.BRAND_TEXT};\n"
+            f"                background: {_t.SURFACE_SUBTLE};\n"
             "            }\n"
             "            QLabel#settingsSectionTitle {\n"
-            "                color: #193331;\n"
-            "                font-size: 18px;\n"
-            "                font-weight: 750;\n"
+            f"                color: {_t.TEXT};\n"
+            f"                font-size: {_t.FONT_XL}px;\n"
+            f"                font-weight: {_t.WEIGHT_BOLD};\n"
             "            }\n"
             + _s.CARD_TITLE_QSS
             + _s.OCR_FEEDBACK_QSS
-            + "            QFormLayout QLabel { color: #49615f; font-size: 13px; font-weight: 500; }\n"
+            + f"            QFormLayout QLabel {{ color: {_t.TEXT_LABEL}; font-size: {_t.FONT_MD}px; }}\n"
             + _s.MESSAGE_BOX_QSS
             + _s.SCROLLBAR_QSS
             + _s.COMMON_CONTROLS_QSS
@@ -2569,7 +2559,7 @@ class RunViewerWidget(QWidget):
         header.addWidget(self.status_label)
         header.addStretch(1)
         # 运行输出页头三个按钮都走 ui_common 的按钮工厂（尺寸/外观单一来源）。
-        self.stop_button = outline_button("停止", object_name="runStopButton")
+        self.stop_button = stop_button("停止")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         header.addWidget(self.stop_button)
@@ -2637,33 +2627,25 @@ class RunViewerWidget(QWidget):
 
     def _paint_status(self, color: str) -> None:
         self.status_label.setStyleSheet(
-            f"font-size: 13px; font-weight: 700; color: {color}; "
-            "background: #ffffff; border: 1px solid #cbdcd6; "
-            "border-radius: 6px; padding: 7px 14px;"
+            f"font-size: {_t.FONT_MD}px; font-weight: {_t.WEIGHT_SEMIBOLD}; "
+            f"color: {color}; "
+            f"background: {_t.SURFACE_CARD}; border: 1px solid {_t.BORDER}; "
+            f"border-radius: {_t.RADIUS_MD}px; padding: 7px {_t.GAP_LG}px;"
         )
 
     @staticmethod
     def _style_sheet() -> str:
+        # 「停止」按钮的配色已收敛到 ui_common 的 BUTTON_STOP 角色，
+        # 此处不再重复定义——这正是本次样式统一要去掉的重复。
         return (
             "\n"
             + _s.PANEL_BASE_QSS
             + _s.PANEL_CONTENT_QSS
             + _s.CARD_TITLE_QSS
             + _s.OCR_FEEDBACK_QSS
-            + "            QPushButton#runStopButton {\n"
-            "                color: #ffffff;\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d6534d, stop:1 #bd403b);\n"
-            "                border: none;\n"
-            "                font-weight: 700;\n"
-            "            }\n"
-            "            QPushButton#runStopButton:disabled {\n"
-            "                color: #9aa9a7;\n"
-            "                background: #e9eeec;\n"
-            "                border: 1px solid #dce5e2;\n"
-            "            }\n"
-            "            QPushButton#runStopButton:hover {\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #bd403b, stop:1 #a93632);\n"
-            "            }\n" + _s.MESSAGE_BOX_QSS + _s.COMMON_CONTROLS_QSS + "        "
+            + _s.MESSAGE_BOX_QSS
+            + _s.COMMON_CONTROLS_QSS
+            + "        "
         )
 
 class UiTreeDumpWidget(QWidget):
@@ -2706,7 +2688,7 @@ class UiTreeDumpWidget(QWidget):
         self._search_timer.setInterval(200)
         self._search_timer.timeout.connect(self._apply_filter)
         self.try_click_button = outline_button(
-            "尝试点击", object_name="settingsTryButton"
+            "尝试点击", object_name=BUTTON_SECONDARY
         )
         self.try_click_button.setToolTip("在模拟器中点击当前选中节点的中心")
         self.try_click_button.clicked.connect(self._try_click)
@@ -2717,7 +2699,7 @@ class UiTreeDumpWidget(QWidget):
         self.insert_mode_combo.addItem("文本", "text")
         search_row.addWidget(self.insert_mode_combo)
         self.insert_button = outline_button(
-            "插入点击动作", object_name="settingsTestButton"
+            "插入点击动作", object_name=BUTTON_SECONDARY
         )
         self.insert_button.clicked.connect(self._insert_click)
         search_row.addWidget(self.insert_button)
@@ -2736,21 +2718,18 @@ class UiTreeDumpWidget(QWidget):
 
     @staticmethod
     def _style_sheet() -> str:
+        # 「尝试点击」原先自带一套绿色渐变配色（#2b9b8b 起步），
+        # 与本项目的主按钮渐变只有一两档色差，属于一次性色值；
+        # 现已改用 BUTTON_SECONDARY 角色，此处不再重复定义。
         return (
             "\n"
             + _s.PANEL_BASE_QSS
             + _s.PANEL_CONTENT_QSS
             + _s.CARD_TITLE_QSS
             + _s.OCR_FEEDBACK_QSS
-            + "            QPushButton#settingsTryButton {\n"
-            "                color: #ffffff;\n"
-            "                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b9b8b, stop:1 #137f73);\n"
-            "                border: none;\n"
-            "                font-weight: 700;\n"
-            "            }\n"
-            "            QPushButton#settingsTryButton:hover {\n"
-            "                background: " + _s.GREEN_VGRAD_HOVER + ";\n"
-            "            }\n" + _s.MESSAGE_BOX_QSS + _s.COMMON_CONTROLS_QSS + "        "
+            + _s.MESSAGE_BOX_QSS
+            + _s.COMMON_CONTROLS_QSS
+            + "        "
         )
 
     def load_snapshot(self, snapshot: UiSnapshot) -> None:
@@ -3406,10 +3385,11 @@ class ActionEditorWidget(QWidget, _ActionFormMixin):
 
     @staticmethod
     def _style_sheet() -> str:
+        # QLabel 的颜色已由 PANEL_BASE_QSS 统一给出（同色），此处原本的
+        # 重复规则已删除；若将来需要区分，请从 ui_tokens 取值。
         return (
-            "\n" + _s.PANEL_BASE_QSS + "            QLabel {\n"
-            "                color: #193331;\n"
-            "            }\n"
+            "\n"
+            + _s.PANEL_BASE_QSS
             + _s.CARD_TITLE_QSS
             + _s.MESSAGE_BOX_QSS
             + _s.COMMON_CONTROLS_QSS
@@ -3496,8 +3476,8 @@ class ActionListEditorWidget(QWidget, _ActionListMixin):
         header = QHBoxLayout()
         header.setSpacing(8)
         title_label = card_title(title)
-        add_button = outline_button("添加步骤", object_name="settingsTestButton")
-        edit_button = outline_button("编辑步骤", object_name="settingsTestButton")
+        add_button = outline_button("添加步骤", object_name=BUTTON_SECONDARY)
+        edit_button = outline_button("编辑步骤", object_name=BUTTON_SECONDARY)
         remove_button = danger_button("删除步骤", minimum_width=None)
         add_button.clicked.connect(self._add_step)
         edit_button.clicked.connect(self._edit_step)

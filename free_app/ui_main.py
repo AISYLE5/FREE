@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import ui_tokens as _t
 from .adb import AdbClient
 from .background_task import BackgroundTask
 from .config import (
@@ -73,7 +74,6 @@ from .ui_common import (
     MAIN_ACTION_BUTTON_WIDTH,
     MAIN_ICON_BUTTON_WIDTH,
     PAGE_BASE_QSS,
-    ROW_BUTTON_HEIGHT,
     QMessageBox,
     confirm,
     refresh_style,
@@ -95,14 +95,14 @@ def build_app_icon() -> QIcon:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#137f73"))
+        painter.setBrush(QColor(_t.BRAND))
         inset = max(1.0, size * 0.06)
         painter.drawRoundedRect(
             QRectF(inset, inset, size - inset * 2, size - inset * 2),
             size * 0.18,
             size * 0.18,
         )
-        painter.setPen(QColor("#ffffff"))
+        painter.setPen(QColor(_t.TEXT_ON_BRAND))
         painter.setFont(
             QFont("Microsoft YaHei", max(8, int(size * 0.54)), QFont.Weight.Bold)
         )
@@ -145,14 +145,16 @@ class MainPage(QWidget):
         "skipped": "未执行",
         "completed_today": "今日已完成",
     }
+    # 任务状态 → 列表行文字颜色。取值同样取自 ui_tokens，
+    # 让"界面一共用了哪些颜色"只有一个来源。
     _STATE_COLORS = {
-        "pending": QColor("#617477"),
-        "running": QColor("#087f73"),
-        "success": QColor("#2b7b4e"),
-        "failed": QColor("#b04843"),
-        "stopped": QColor("#b06b2e"),
-        "skipped": QColor("#8a9695"),
-        "completed_today": QColor("#2b7b4e"),
+        "pending": QColor(_t.TEXT_SECTION),
+        "running": QColor(_t.BRAND),
+        "success": QColor(_t.SUCCESS_TEXT_SOFT),
+        "failed": QColor(_t.DANGER_TEXT_ALT),
+        "stopped": QColor(_t.WARN_TEXT_DEEP),
+        "skipped": QColor(_t.TEXT_FAINT),
+        "completed_today": QColor(_t.SUCCESS_TEXT_SOFT),
     }
 
     def __init__(self, *, make_adb: Callable[[], AdbClient]) -> None:
@@ -314,10 +316,10 @@ class MainPage(QWidget):
         self.settings_button.setText("⚙")
         # 齿轮是图标字符而非界面文字；保持其符号字体，
         # 这样它渲染为紧凑的单色图标，而不是回退字形。
-        # 宽度固定；高度只设上限，实际高度与同排文字按钮一致（样式表给的行高）。
+        # 宽度固定；高度与同排文字按钮一致（同一条样式表规则），
+        # 不再额外设 maximumHeight——那会让图标按钮比整排高出 2px。
         self.settings_button.setFont(QFont("Segoe UI Symbol", 15))
         self.settings_button.setFixedWidth(MAIN_ICON_BUTTON_WIDTH)
-        self.settings_button.setMaximumHeight(ROW_BUTTON_HEIGHT + 2)
         self.settings_button.clicked.connect(self.settings_requested.emit)
 
         layout.addStretch(1)
@@ -329,151 +331,129 @@ class MainPage(QWidget):
         return layout
 
     def _apply_style(self) -> None:
+        # 主页专有规则；取值全部来自 ui_tokens。
+        # `[runState]` 的按钮状态配色已收敛到 ui_common 的公共按钮规则，
+        # 此处不再重复定义。
         self.setStyleSheet(
-            """
-            QMainWindow, QWidget#appRoot {
-                background: #f3f7f5;
-                color: #172b2c;
-            }
-            QFrame#surface {
-                background: #ffffff;
-                border: 1px solid #d9e5e1;
+            f"""
+            QMainWindow, QWidget#appRoot {{
+                background: {_t.SURFACE_PAGE};
+                color: {_t.TEXT_STRONG};
+            }}
+            QFrame#surface {{
+                background: {_t.SURFACE_CARD};
+                border: 1px solid {_t.BORDER_SOFT};
                 border-radius: 0;
-            }
-            QFrame#mainActionBar {
+            }}
+            QFrame#mainActionBar {{
                 background: transparent;
                 border: none;
-                border-radius: 8px;
-            }
-            QLabel#brandLabel {
-                color: #0b8478;
-                font-size: 22px;
-                font-weight: 800;
+                border-radius: {_t.RADIUS_MD}px;
+            }}
+            QLabel#brandLabel {{
+                color: {_t.BRAND};
+                font-size: {_t.FONT_TITLE}px;
+                font-weight: {_t.WEIGHT_BOLD};
                 padding-right: 5px;
-            }
-            QLabel#titleLabel {
-                color: #172b2c;
-                font-size: 18px;
-                font-weight: 700;
-            }
-            QLabel#taskSectionTitle {
-                color: #203637;
-                font-size: 20px;
-                font-weight: 750;
-            }
-            QLabel#taskSortHint {
-                color: #8a9b98;
-                font-size: 12px;
-            }
-            QLabel#mutedLabel {
-                color: #718181;
-                font-size: 11px;
-            }
-            QLabel#deviceBadge {
+            }}
+            QLabel#titleLabel {{
+                color: {_t.TEXT_STRONG};
+                font-size: {_t.FONT_XL}px;
+                font-weight: {_t.WEIGHT_SEMIBOLD};
+            }}
+            QLabel#taskSectionTitle {{
+                color: {_t.TEXT_HEADING};
+                font-size: {_t.FONT_XL}px;
+                font-weight: {_t.WEIGHT_BOLD};
+            }}
+            QLabel#taskSortHint {{
+                color: {_t.TEXT_FAINT};
+                font-size: {_t.FONT_SM}px;
+            }}
+            QLabel#mutedLabel {{
+                color: {_t.TEXT_MUTED};
+                font-size: {_t.FONT_XS}px;
+            }}
+            QLabel#deviceBadge {{
                 min-width: 190px;
-                padding: 8px 12px;
-                border-radius: 6px;
-                font-weight: 600;
-            }
-            QLabel#deviceBadge[state="ready"] {
-                background: #e0f3ec;
-                color: #126b5f;
-                border: 1px solid #a5d8c8;
-            }
-            QLabel#deviceBadge[state="checking"] {
-                background: #fff3d9;
-                color: #95651b;
-                border: 1px solid #edd39a;
-            }
-            QLabel#deviceBadge[state="error"] {
-                background: #fde9e6;
-                color: #a3403b;
-                border: 1px solid #e8b8b3;
-            }
-            QToolButton#settingsButton {
-                min-width: 48px;
-                max-width: 48px;
+                padding: {_t.PAD_XS}px {_t.PAD_SM}px;
+                border-radius: {_t.RADIUS_MD}px;
+                font-weight: {_t.WEIGHT_MEDIUM};
+            }}
+            QLabel#deviceBadge[state="ready"] {{
+                background: {_t.SUCCESS_FILL};
+                color: {_t.SUCCESS_TEXT};
+                border: 1px solid {_t.SUCCESS_LINE};
+            }}
+            QLabel#deviceBadge[state="checking"] {{
+                background: {_t.WARN_FILL};
+                color: {_t.WARN_TEXT};
+                border: 1px solid {_t.WARN_LINE};
+            }}
+            QLabel#deviceBadge[state="error"] {{
+                background: {_t.DANGER_FILL};
+                color: {_t.DANGER_TEXT_ALT};
+                border: 1px solid {_t.DANGER_LINE};
+            }}
+            QToolButton#settingsButton {{
+                min-width: {_t.BUTTON_WIDTH_ICON}px;
+                max-width: {_t.BUTTON_WIDTH_ICON}px;
                 padding: 0;
-                color: #35635f;
-                background: #ffffff;
-                border: 1px solid #cbdad6;
-                border-radius: 6px;
-            }
-            QToolButton#settingsButton:hover {
-                color: #0f746b;
-                background: #e8f5f1;
-                border-color: #83c0b5;
-            }
-            QToolButton#settingsButton:pressed {
-                background: #dceee9;
-                border-color: #65b3a7;
-            }
-            QListWidget#taskList {
+                color: {_t.TEXT_BUTTON};
+                background: {_t.SURFACE_CARD};
+                border: 1px solid {_t.BORDER};
+                border-radius: {_t.RADIUS_MD}px;
+            }}
+            QToolButton#settingsButton:hover {{
+                color: {_t.BRAND_TEXT_SOFT};
+                background: {_t.BRAND_WASH_HOVER};
+                border-color: {_t.BRAND_LINE_HOVER};
+            }}
+            QToolButton#settingsButton:pressed {{
+                background: {_t.BRAND_WASH_PRESSED};
+                border-color: {_t.BRAND_LINE};
+            }}
+            QListWidget#taskList {{
                 background: transparent;
                 border: 0;
                 outline: 0;
                 padding: 2px 1px;
-            }
-            QListWidget#taskList::item {
-                background: #f7faf9;
-                border: 1px solid #e0e9e6;
-                border-radius: 6px;
-                padding: 11px 12px;
-                color: #2a4243;
-            }
-            QListWidget#taskList::item:hover {
-                background: #edf7f4;
-                border-color: #a8d5cc;
-            }
-            QListWidget#taskList::item:selected {
-                background: #dff2ed;
-                border: 1px solid #65b3a7;
-                color: #0f625b;
+            }}
+            QListWidget#taskList::item {{
+                background: {_t.SURFACE_SUBTLE};
+                border: 1px solid {_t.BORDER_SOFT};
+                border-radius: {_t.RADIUS_MD}px;
+                padding: 11px {_t.PAD_SM}px;
+                color: {_t.TEXT_SECTION};
+            }}
+            QListWidget#taskList::item:hover {{
+                background: {_t.BRAND_WASH_HOVER};
+                border-color: {_t.BRAND_LINE_SOFT};
+            }}
+            QListWidget#taskList::item:selected {{
+                background: {_t.BRAND_FILL};
+                border: 1px solid {_t.BRAND_LINE};
+                color: {_t.BRAND_TEXT};
                 outline: none;
-            }
-            QPushButton#secondaryButton[runState="busy"]:disabled {
-                color: #7b8986;
-                background: #e9eeec;
-                border-color: #cbd6d2;
-            }
-            QPushButton#secondaryButton[runState="stop"] {
-                color: #ffffff;
-                background: #d6534d;
-                border-color: #d6534d;
-                font-weight: 700;
-            }
-            QPushButton#secondaryButton[runState="stop"]:hover {
-                background: #bd403b;
-                border-color: #bd403b;
-            }
-            QPushButton#secondaryButton[runState="stop"]:pressed {
-                background: #a93632;
-                border-color: #a93632;
-            }
-            QPushButton#secondaryButton[runState="stopping"]:disabled {
-                color: #8c5f25;
-                background: #fff0d9;
-                border-color: #e4b56c;
-                font-weight: 700;
-            }
-            QPlainTextEdit#logView {
-                background: #f8fbfa;
-                color: #344c4d;
-                border: 1px solid #d7e5e1;
+            }}
+            QPlainTextEdit#logView {{
+                background: {_t.SURFACE_SUBTLE};
+                color: {_t.TEXT_SECTION};
+                border: 1px solid {_t.BORDER_SOFT};
                 border-radius: 0;
                 padding: 9px;
-                selection-background-color: #cfe9e2;
-                selection-color: #183d3b;
-            }
-            QSplitter#contentSplitter::handle {
+                selection-background-color: {_t.BRAND_WASH};
+                selection-color: {_t.TEXT};
+            }}
+            QSplitter#contentSplitter::handle {{
                 background: transparent;
                 width: 0px;
-            }
-            QStatusBar {
-                background: #e6efeb;
-                color: #5c6e6f;
-                border-top: 1px solid #d4e1dc;
-            }
+            }}
+            QStatusBar {{
+                background: {_t.SURFACE_SECTION};
+                color: {_t.TEXT_MUTED_ALT};
+                border-top: 1px solid {_t.BORDER_SOFT};
+            }}
             """
             + PAGE_BASE_QSS
         )
@@ -863,7 +843,7 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(
 
-            "QMainWindow { background: #f3f7f5; color: #172b2c; }"
+            f"QMainWindow {{ background: {_t.SURFACE_PAGE}; color: {_t.TEXT_STRONG}; }}"
 
         )
 
