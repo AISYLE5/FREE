@@ -39,6 +39,7 @@ flowchart LR
         MOD["models.py<br/>数据模型"]
         NTF["notifications.py<br/>SMTP 通知"]
         BT["background_task.py<br/>后台任务派发"]
+        CMP["task_completions.py<br/>今日完成记录"]
         LOG["logging_utils.py / trash.py"]
     end
 
@@ -64,6 +65,8 @@ flowchart LR
     SP --> CFG
     W --> CFG
     MW --> BT
+    MW --> CMP
+    SP --> CMP
     SP --> BT
     TP --> BT
     E --> LOG
@@ -98,6 +101,7 @@ FREE/
 ├─ config/                        # 用户配置（全部为 JSON）
 │  ├─ settings.json               #   全局设置（由 settings.example.json 模板生成）
 │  ├─ settings.example.json       #   设置模板（首次运行自动复制）
+│  ├─ task_completions.json       #   今日完成记录（运行时生成，可随时重建）
 │  ├─ tasks/*.json                #   任务定义（文件名必须等于任务 id）
 │  └─ actions/*.json              #   复合动作库定义
 ├─ free_app/                      # 核心包（见第 4 节各层）
@@ -115,8 +119,8 @@ FREE/
 | 模块 | 职责 |
 | --- | --- |
 | `ui_common.py` | 各 UI 模块共享的元素（原 `styles.py` + `message_box.py` + `ui_common.py`）：QSS 片段与页面级前缀 `PAGE_BASE_QSS`（片段仍按 `_s.XXX` 引用，`_s` 指向本模块）；中文消息框 `QMessageBox` / `confirm()`；按钮工厂 `secondary_button` / `primary_button` / `outline_button` / `danger_button` / `back_button`——**全项目所有 `QPushButton` 都经这里创建**，尺寸只由本模块常量决定（`MAIN_ACTION_BUTTON_SIZE` 主页动作栏整排同尺寸、`TOOL_BUTTON_WIDTH` 二级页头工具按钮、`BACK_BUTTON_SIZE` 返回、`ROW_BUTTON_HEIGHT` 成排按钮高度）；`page_title` / `card_title` / `page_header`；`dialog_action_row`；`scrollable_page` + `mount_scrollable_page`；`expanding`；`refresh_style`；共享控件 `ElidedLabel` / `SettingsComboBox` / `ExecutionCountComboBox` / `ModelRowCard` / `confirm_dialog` |
-| `ui_main.py` | `MainPage` + `MainWindow` + GUI 入口（原 `ui_main.py` + `main_window.py` + `main.py`）。`MainPage`：主页，只有三块内容——任务顺序列表（拖拽排序，行内显示序号/名称/状态/动作数）、页头（品牌/标题/副标题、设备状态徽标与探测 `probe_device_status`、4 个等宽按钮 + 齿轮）、右侧运行日志面板，另有 `build_app_icon()`；跨页操作以信号发出（`start_*_requested` / `settings_requested` / `task_manager_requested` …）。`MainWindow`：窗口容器，窗口底色/固定尺寸、`QStackedWidget` 三页切换、把 `TaskWorker` / `BatchTaskWorker` 移到 `QThread`、汇总结果、把运行日志写入 `logs/run_<时间戳>.log`、退出确认与收尾；页面控件访问经 `__getattr__` 转发。`main()` / `default_base_directory()`：GUI 入口。运行状态与进度没有对应控件：结果只反映在任务列表状态、状态栏消息与运行日志上 |
-| `ui_settings.py` | `SettingsPage` + `SettingsDialog` + `ModelDownloadWorker`（原 `ui_settings.py` + `settings_dialog.py`）：设置页面外壳（页头 + 内容区）、MuMu/ADB 路径、执行与清理、重试、OCR 模型选择与下载管理、SMTP 邮件的分页设置；`_FieldBinding` 一张表驱动控件的读取/写入/收集，保存经 `config.update_settings()` 单点读-改-写 |
+| `ui_main.py` | `MainPage` + `MainWindow` + GUI 入口（原 `ui_main.py` + `main_window.py` + `main.py`）。`MainPage`：主页，只有三块内容——任务顺序列表（拖拽排序，行内显示序号/名称/状态/动作数）、页头（品牌/标题/副标题、设备状态徽标与探测 `probe_device_status`、4 个等宽按钮 + 齿轮）、右侧运行日志面板，另有 `build_app_icon()`；跨页操作以信号发出（`start_*_requested` / `settings_requested` / `task_manager_requested` …）。`MainWindow`：窗口容器，窗口底色/固定尺寸、`QStackedWidget` 三页切换、把 `TaskWorker` / `BatchTaskWorker` 移到 `QThread`、汇总结果、把运行日志写入 `logs/run_<时间戳>.log`、退出确认与收尾；同时持有 `completions_path`，在任务成功后记录「今日完成」（见 5.3），并在「执行全部」时按 `respect_today_completion` 过滤。页面控件访问经 `__getattr__` 转发。`main()` / `default_base_directory()`：GUI 入口。运行状态与进度没有对应控件：结果只反映在任务列表状态、状态栏消息与运行日志上 |
+| `ui_settings.py` | `SettingsPage` + `SettingsDialog` + `ModelDownloadWorker`（原 `ui_settings.py` + `settings_dialog.py`）：设置页面外壳（页头 + 内容区）、MuMu/ADB 路径、执行与清理、重试、今日完成、OCR 模型选择与下载管理、SMTP 邮件的分页设置；`_FieldBinding` 一张表驱动控件的读取/写入/收集，保存经 `config.update_settings()` 单点读-改-写。「今日完成」分页直接读写 `task_completions.py` 的记录文件（逐任务 / 整体重置），不受「取消保存」影响 |
 | `ui_task_manager.py` | `TaskManagerPage` + `TaskManagerWidget` + 查看器 + 动作表单（原 `ui_task_manager.py` + `task_manager.py` + `task_viewers.py` + `action_editor_dialogs.py`）：任务管理页外壳（页头工具按钮「显示坐标 / 获取包名 / 抓取 UI 树 / 查看 JSON」+ 返回）、内嵌编辑器的惰性创建与信号接线、"获取包名"Toast；任务与复合动作的可视化编辑（`_EntryListPanel` 规格对象驱动两个名称列表页、`_EmbeddedNavigator` 收敛内嵌导航状态）、JSON 预览、单步骤试运行；三个嵌入查看器（`JsonViewerWidget` / `RunViewerWidget` / `UiTreeDumpWidget`）与 UI 树后台抓取 worker；由 `action_schema.ParamSpec` 驱动的动作参数表单（`ActionEditorWidget`）与步骤列表编辑器（`ActionListEditorWidget`） |
 
 ### 4.2 执行层（工作线程）
@@ -124,7 +128,7 @@ FREE/
 | 模块 | 职责 |
 | --- | --- |
 | `worker.py` | `TaskWorker`（单任务）与 `BatchTaskWorker`（顺序批量），共同继承 `_WorkerBase`（共享停止事件、设置字段与 `_finish_with()` 收尾：通知 → 清理旧输出 → 必发 `finished`）。公共流程：`prepare_device()` → 执行任务 → `cleanup_apps()` → `shutdown_mumu()`/`shutdown_mumu_app()` → 发送邮件通知 → 清理旧输出文件。批量模式下每个任务开始前做一次 `ensure_device_ready()` 设备体检（见 5.2），每个任务之间做一次 App 清理，失败可重试（见 6.5）|
-| `task_runner.py` | 任务级执行控制：`task_execution_count()` 读取 `task_execution_counts[task_id]`；`run_task_executions()` 允许一个任务在同一批次内尝试最多 N 次，成功后即停，重试前按需执行 App 清理与 ADB 重连回调 |
+| `task_runner.py` | 任务级执行控制：`task_execution_count()` 读取 `task_execution_counts[task_id]`；`batch_tasks_to_run()` 选出「执行全部」要跑的任务（执行次数为 0 的、以及 `exclude_task_ids` 中的——即「只执行今日未完成」时当天已完成的任务——都被跳过）；`run_task_executions()` 允许一个任务在同一批次内尝试最多 N 次，成功后即停，重试前按需执行 App 清理与 ADB 重连回调 |
 | `app_lifecycle.py` | 任务结束后的进程清理：`cleanup_packages()` 汇总任务引用的包名（`collect_packages()`，递归含嵌套动作）与设置项 `cleanup_extra_packages`，按该列表对每个包执行 `adb force-stop`，延迟与开关均来自设置。附加包名用于清理跨任务残留的 App（例如 QQ 分享页会停留在前台顶住下一个任务的启动）|
 
 ### 4.3 动作引擎
@@ -162,6 +166,7 @@ FREE/
 | `logging_utils.py` | 日志行归一化（统一时间戳前缀）；日志完整落盘，不设级别筛选 |
 | `notifications.py` | SMTP 邮件通知：把 `RunResult` / `BatchRunResult` 渲染为文本 + HTML 正文（内嵌关键页截图），支持 SSL/STARTTLS、`notify_on` 状态过滤；**任何失败都不改变任务结果** |
 | `trash.py` | 文件删除与回收站：`remove_path()` 按 `cleanup_mode` 统一"回收站 / 永久删除"两分支；`send_to_recycle_bin()` 通过 `SHFileOperationW` 实现可恢复删除；输出文件治理由 `prune_files()`（按数量上限保留最新 N 个）与 `clear_output_files()`（手动全清）提供，被 worker、设置页与任务管理页共用 |
+| `task_completions.py` | 任务「今日完成」记录（`config/task_completions.json`，`{任务 id: "YYYY-MM-DD HH:MM:SS"}`）：`mark_completed()` / `reset_completion()` / `reset_completions()` 经 `load_completions()` 读-改-写；`is_completed_on()` / `completed_task_ids()` 按**日历日**判定"今日"，跨天自动视为未完成，无需定时清理。`sanitize_completions()` 是全项目唯一的记录格式校验边界（与 `load_settings()` 同风格）；文件缺失或损坏按"没有记录"处理，绝不拦住启动 |
 
 ## 5. 运行时数据流
 
@@ -204,7 +209,18 @@ sequenceDiagram
 - 任一任务被停止或用户停止则终止后续任务；
 - 最终汇总为 `BatchRunResult`，按「停止 > 失败(含配置错误) > 成功」的优先级判定整体状态。
 
-### 5.3 设置页与任务管理页的数据流
+### 5.3 「今日完成」记录与「只执行今日未完成」
+
+`task_completions.py` 记录每个任务**最近一次成功完成**的本地时刻。它的写入点在 UI 侧而不是 worker 侧：`MainWindow._single_finished()` / `_batch_task_finished()` 收到 `RunStatus.SUCCESS` 后调用 `mark_completed()`（失败、停止、跳过都不记录；任务管理页调试运行的临时任务 id 以 `_` 开头，同样不记录）。这样 worker 保持"只执行、不写状态文件"，完成记录写盘失败也只记日志、不改变任务结果。
+
+读取点有两个，都只看**日历日**：
+
+- **执行过滤**：「执行全部」时若 `respect_today_completion` 为真，先取当天已完成的任务 id，作为 `exclude_task_ids` 传给 `task_runner.batch_tasks_to_run()`（与"执行次数为 0"的既有过滤并列）。被排除的任务在任务列表上标记为「今日已完成」，日志写明「跳过今日已完成的任务」，避免用户以为它们会跑。**单任务「执行」不做这层过滤**——那是用户显式的手动覆盖。
+- **列表标记**：`MainWindow._apply_today_completion_states()` 在启动、设置保存、任务重载后同步标记。它是**双向**的：当天已完成的标记为「今日已完成」，而先前标过、现在（被重置或跨天）已不算完成的任务退回「待执行」——否则在设置页重置完成时间后主页会一直留着过期标记。它只降级 `completed_today` 这一种状态，不碰真实运行结果（success / failed / stopped）。选项关闭时不标记（今日完成与否不影响执行，标记会造成"这任务不会跑"的误导），并顺手清掉残留标记。
+
+「今日完成」的设置页分页直接读写记录文件（逐任务「重置」/「重置全部完成时间」），因此**不受「取消保存」影响**：重置立即生效，与同页那个走 `settings.json` 的勾选项语义不同。
+
+### 5.4 设置页与任务管理页的数据流
 
 - **设置页**：`SettingsDialog` 载入 `load_settings()` 清洗后的设置 → 编辑 → `_collect_settings()` → `update_settings()` 单点合并/清洗/原子写回并刷新内存快照。OCR 模型下载在 `ModelDownloadWorker` 线程中执行，进度通过信号刷新卡片。
 - **任务管理页**：编辑缓冲区与文件解耦，`reload()` 一次读出校验结果与原始 JSON（`load_task_directory_raw()`），`_save_task()`/`_save_compound()` 负责写回；保存前调用 `validate_action_params()` 与 `load_task_directory()` 做完整校验（含复合动作展开后的校验）；删除/重命名回滚文件时视清理模式经 `trash.remove_path()` 送入回收站或直接删除。
@@ -278,9 +294,24 @@ sequenceDiagram
 
 `task_order` 列表决定批量执行顺序，未列入的新任务自动追加到末尾（`order_tasks()`）。
 
+### 7.4 今日完成记录文件
+
+`config/task_completions.json`（与 `settings.json` 同目录，已加入 `.gitignore`）：
+
+```json
+{
+  "hanserclub": "2026-10-10 21:32:05"
+}
+```
+
+由 `task_completions.py` 独占读写，**不经过 `config.py`**：它是一份可随时重建的状态文件，不是用户配置，因此没有 `NATIVE_SETTING_KEYS` 白名单——`sanitize_completions()` 直接按格式校验，损坏或字段非法的条目逐条丢弃。
+
+时间用**本地 naive 时间**且只比较日历日：用户看到的"今天"就是记录里的日期，跨天自动失效。这也意味着 `pyproject.toml` 里为 `task_completions` 放开了 ruff 的 `DTZ007`/`DTZ011`（naive `strptime` 与 `date.today()` 正是所需语义，带时区反而会让"今日"与用户看到的日期不一致）。
+
 ## 8. 关键设计决策与约定
 
-- **单一校验边界**：设置文件只经 `load_settings()` 清洗、动作参数只经 `validate_action_params()` 校验，下游一律信任已解析的类型，杜绝“每一层各写一套宽容回退”；不兼容旧字段/旧写法（如 click 的裸字符串 `text`、`recipients` 字符串、`cleanup_after_task` 的 `None`/`""`）已彻底移除。
+- **单一校验边界**：设置文件只经 `load_settings()` 清洗、动作参数只经 `validate_action_params()` 校验、完成记录只经 `sanitize_completions()` 清洗，下游一律信任已解析的类型，杜绝“每一层各写一套宽容回退”；不兼容旧字段/旧写法（如 click 的裸字符串 `text`、`recipients` 字符串、`cleanup_after_task` 的 `None`/`""`）已彻底移除。
+- **配置与状态分离**：`settings.json` / `tasks/*.json` 是用户配置（经白名单清洗、走"取消/保存"语义）；`task_completions.json` 是运行时状态（按格式校验、立即生效、可随时重建）。二者不共用一套读写与校验路径，避免"重置完成时间"被"取消保存"回滚，也避免配置清洗层承担状态文件的容错。
 - **一个页面一个文件，共享元素只留一处**：主页/设置页/任务管理页分别是 `ui_main.MainPage`、`ui_settings.SettingsPage`、`ui_task_manager.TaskManagerPage`，各自 `_apply_style()` 只写自己的例外规则；跨模块重复的样式、按钮尺寸与 `objectName` 组合、页头元素、滚动容器骨架只允许出现在 `ui_common.py`（设置/任务管理/动作编辑/查看器同样从那里取控件工厂）。判定标准是"同一种外观是否需要写第二遍"，而不是"看起来像不像"：主页动作栏按钮高 48px、二级页面与对话框成排按钮高 40px，这类有意的层级差异保留为不同常量，不做强行归一。窗口级别的东西（窗口底色、固定尺寸、页面切换、线程与运行编排）不下沉到页面。页面不反向导入 `main_window`。
 - **固定模拟器规格**：1080×1920 / 480dpi 是硬性要求，连接后校验，避免坐标与 OCR 定位因分辨率漂移——这也是点击坐标直接落屏的前提。
 - **引擎纯逻辑化**：所有副作用（时间、ADB、日志、截图）通过构造参数注入（`sleep_function`、`log_callback`、`progress_callback`、`ocr_client`），测试用 mock 替换即可；引擎对 Qt 的唯一依赖是 `QImage` 截图校验。
@@ -294,13 +325,15 @@ sequenceDiagram
 
 `tests/` 与 `free_app/` 模块大体一一对应（GUI 查看器的用例包含在 `test_task_manager` 中），采用 `unittest` + `unittest.mock`（无需 pytest 插件），覆盖：
 
-- **纯逻辑**：`test_action_schema`（校验/默认值/描述）、`test_device_ui`（XML 解析/文本匹配）、`test_config`（清洗/加载/展开/替换）、`test_logging_utils`、`test_task_runner`；
+- **纯逻辑**：`test_action_schema`（校验/默认值/描述）、`test_device_ui`（XML 解析/文本匹配）、`test_config`（清洗/加载/展开/替换）、`test_logging_utils`、`test_task_runner`、`test_task_completions`（记录读写/清洗容错/跨天判定/重置）；
 - **设备层**：`test_adb`、`test_mumu`（以 mock 的 subprocess/CLI 输出驱动）、`test_onnx_ocr`、`test_ocr_models`；
 - **引擎**：`test_engine` 用 mock ADB/OCR 驱动完整任务执行、分支循环、重试、停止与截图路径；
 - **执行层**：`test_worker`、`test_app_lifecycle`、`test_trash`、`test_notifications`；
-- **GUI**：`test_main_window`（窗口容器：运行编排、页面切换、任务顺序持久化、日志缓冲）、`test_settings_dialog`、`test_task_manager`、`test_action_editor_dialogs`（均使用 `QApplication` 与 mock，不做真实设备交互）。UI 收敛为四个模块后，这些用例统一从 `ui_main` / `ui_settings` / `ui_task_manager` / `ui_common` 导入，mock 目标也随之调整（如 `free_app.ui_settings.download_model`、`free_app.ui_main.QThread`）。
+- **GUI**：`test_main_window`（窗口容器：运行编排、页面切换、任务顺序持久化、日志缓冲、今日完成的记录/过滤/列表标记同步）、`test_settings_dialog`（含「今日完成」分页与横向溢出回归）、`test_task_manager`、`test_action_editor_dialogs`（均使用 `QApplication` 与 mock，不做真实设备交互）。UI 收敛为四个模块后，这些用例统一从 `ui_main` / `ui_settings` / `ui_task_manager` / `ui_common` 导入，mock 目标也随之调整（如 `free_app.ui_settings.download_model`、`free_app.ui_main.QThread`）。
 
 引擎构造参数全部可注入，是测试友好性的根本保障；新增动作时应在 `test_action_schema` 与 `test_engine` 中同时补充规格与执行路径的用例。
+
+> 写 GUI 用例时注意两处易踩的坑：`MainWindow._start_all_tasks()` 会先 `_save_task_order()`，那一步从磁盘读-改-写并**替换 `window.settings`**，因此测试里改设置必须写盘后 `load_settings()` 重载，改内存字典会被覆盖；`QLayout.removeWidget()` **不会隐藏**控件（与 `QStackedWidget.removeWidget` 不同），重建行列表时必须 `setParent(None)`，否则旧行会留在原位继续绘制到 `deleteLater` 执行为止。
 
 ## 10. 扩展指南
 
@@ -315,8 +348,13 @@ sequenceDiagram
 **新增设置项**
 
 1. `NATIVE_SETTING_KEYS` 加入键名（布尔/数值/字符串族分别扩展 `_sanitize_settings` 的对应默认值字典）；
-2. `ui_settings.py` 增加对应控件并在 `_collect_settings` / `_load_setting_values` 中接线；
-3. 上限类设置同步 `constants.py` 并保持清洗侧钳制。
+2. `ui_settings.py` 的 `_TOP_LEVEL_FIELDS` 加一条 `_FieldBinding` 并在 `_build_*_page` 创建控件——加载 / 未保存检测 / 收集由这张表统一驱动，`_collect_settings` / `_load_setting_values` / `_has_unsaved_changes` / `_save` 通常无需再改；
+3. `config/settings.example.json` 补上默认值（它同时是新用户配置的模板）；
+4. 上限类设置同步 `constants.py` 并保持清洗侧钳制。
+
+**新增运行时状态文件（而非配置项）**
+
+按 `task_completions.py` 的模式：独立模块 + `sanitize_*()` 作为唯一格式校验边界 + 缺失/损坏一律降级为空状态；不要塞进 `settings.json`，否则会被"取消保存"回滚、也会让配置清洗层承担状态容错。若要在设置页展示，注意该页的控件是跨次打开复用的，需要像 `refresh_values()` 那样显式重载。
 
 **新增流程（不改代码）**
 

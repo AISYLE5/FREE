@@ -62,6 +62,12 @@ from .constants import SCREEN_DENSITY, SCREEN_HEIGHT, SCREEN_WIDTH
 from .logging_utils import format_log_line
 from .models import BatchRunResult, RunResult, RunStatus, TaskDefinition
 from .mumu import MuMuError, mumu_adb_address_from_settings, resolve_adb_path
+from .task_completions import (
+    completed_task_ids,
+    completions_path,
+    load_completions,
+    mark_completed,
+)
 from .task_runner import batch_tasks_to_run, task_execution_count
 from .ui_common import (
     MAIN_ACTION_BUTTON_WIDTH,
@@ -137,6 +143,7 @@ class MainPage(QWidget):
         "failed": "失败",
         "stopped": "已停止",
         "skipped": "未执行",
+        "completed_today": "今日已完成",
     }
     _STATE_COLORS = {
         "pending": QColor("#617477"),
@@ -145,6 +152,7 @@ class MainPage(QWidget):
         "failed": QColor("#b04843"),
         "stopped": QColor("#b06b2e"),
         "skipped": QColor("#8a9695"),
+        "completed_today": QColor("#2b7b4e"),
     }
 
     def __init__(self, *, make_adb: Callable[[], AdbClient]) -> None:
@@ -683,6 +691,9 @@ class MainWindow(QMainWindow):
 
         self.settings_path = base_directory / "config" / "settings.json"
 
+        # 任务「今日完成」记录：执行成功时写入，设置页可重置（见 task_completions）。
+        self.completions_path = completions_path(self.settings_path)
+
         self.tasks_directory = base_directory / "config" / "tasks"
 
         ensure_settings_file(self.settings_path)
@@ -761,6 +772,8 @@ class MainWindow(QMainWindow):
         self._populate_tasks()
 
         self._report_config_errors(self.config_errors, popup=False)
+
+        self._apply_today_completion_states()
 
         self._update_subtitle()
 
@@ -1018,7 +1031,59 @@ class MainWindow(QMainWindow):
 
         self._report_config_errors(self.config_errors, popup=popup)
 
+        self._apply_today_completion_states()
+
         return True
+
+    def _apply_today_completion_states(self) -> None:
+
+        """把「今日已完成」标记同步到任务列表。
+
+        双向同步：当天已完成的任务标记为「今日已完成」，而此前标过、
+        现在（被重置或跨天）已不再算完成的任务退回「待执行」——否则在
+        设置页重置完成时间后，主页会一直留着过期的标记。
+
+        只降级 ``completed_today`` 这一种状态，不碰真实运行结果
+        （success / failed / stopped 等）。
+
+        选项关闭时今日完成与否不影响执行，列表保持中性的「待执行」，
+        避免用户误以为该任务不会运行。
+
+        """
+
+        if not bool(self.settings.get("respect_today_completion", False)):
+
+            for task_id, state in list(self.task_states.items()):
+
+                if state == "completed_today":
+
+                    self.task_states[task_id] = "pending"
+
+                    self._update_task_item(task_id)
+
+            return
+
+        done_ids = completed_task_ids(
+
+            load_completions(self.completions_path),
+
+            [task.id for task in self.tasks],
+
+        )
+
+        for task_id in done_ids:
+
+            self.task_states[task_id] = "completed_today"
+
+            self._update_task_item(task_id)
+
+        for task_id, state in list(self.task_states.items()):
+
+            if state == "completed_today" and task_id not in done_ids:
+
+                self.task_states[task_id] = "pending"
+
+                self._update_task_item(task_id)
 
     @Slot()
 
@@ -1488,7 +1553,31 @@ class MainWindow(QMainWindow):
 
             return
 
-        tasks = batch_tasks_to_run(all_tasks, self.settings)
+        # 「只执行今日未完成」：勾选后把当天已完成的任务排除在本次批量之外。
+        # 单任务「执行」不做此过滤——那是用户显式的手动覆盖。
+        respect_today = bool(self.settings.get("respect_today_completion", False))
+
+        done_today_ids = (
+
+            completed_task_ids(
+
+                load_completions(self.completions_path),
+
+                [task.id for task in all_tasks],
+
+            )
+
+            if respect_today
+
+            else []
+
+        )
+
+        tasks = batch_tasks_to_run(
+
+            all_tasks, self.settings, exclude_task_ids=done_today_ids
+
+        )
 
         skipped_tasks = [
 
@@ -1500,11 +1589,37 @@ class MainWindow(QMainWindow):
 
         ]
 
+        done_today_tasks = [
+
+            task
+
+            for task in all_tasks
+
+            if task.id in done_today_ids
+
+            and task_execution_count(self.settings, task.id) > 0
+
+        ]
+
         if not tasks:
+
+            reasons = []
+
+            if skipped_tasks:
+
+                reasons.append(f"{len(skipped_tasks)} 个任务执行次数为 0")
+
+            if done_today_tasks:
+
+                reasons.append(f"{len(done_today_tasks)} 个任务今日已完成")
 
             QMessageBox.warning(
 
-                self, "没有任务", "全部任务的执行次数均为 0，没有可执行任务。"
+                self,
+
+                "没有任务",
+
+                f"没有可执行任务（{'、'.join(reasons) or '无可执行项'}）。",
 
             )
 
@@ -1520,6 +1635,13 @@ class MainWindow(QMainWindow):
 
                 self._update_task_item(task.id)
 
+            # 今日已完成的任务在列表上单独标记，让"没跑"看起来是有原因的。
+            for task in done_today_tasks:
+
+                self.task_states[task.id] = "completed_today"
+
+                self._update_task_item(task.id)
+
             if skipped_tasks:
 
                 self._append_log(
@@ -1527,6 +1649,19 @@ class MainWindow(QMainWindow):
                     "跳过执行次数为 0 的任务："
 
                     + "、".join(self._display_task_name(task) for task in skipped_tasks)
+
+                )
+
+            if done_today_tasks:
+
+                self._append_log(
+
+                    "跳过今日已完成的任务："
+
+                    + "、".join(
+
+                        self._display_task_name(task) for task in done_today_tasks
+                    )
 
                 )
 
@@ -1588,6 +1723,8 @@ class MainWindow(QMainWindow):
 
         self.task_executions_done += 1
 
+        self._record_completion(result)
+
         self.task_states[result.task_id] = result.status.value
 
         self._update_task_item(result.task_id)
@@ -1598,11 +1735,47 @@ class MainWindow(QMainWindow):
 
         self.task_results[result.task_id] = result
 
+        self._record_completion(result)
+
         self.task_states[result.task_id] = result.status.value
 
         self._update_task_item(result.task_id)
 
         self._show_run_status(result.status, result.error, result.failed_step)
+
+    def _record_completion(self, result: RunResult) -> None:
+
+        """任务成功完成时写入「今日完成」时间戳。
+
+        写盘失败只记日志：完成记录是可重建的状态文件，
+        不能因为它写不进去而改变任务本身的执行结果。调试运行的
+        临时任务（id 以 ``_`` 开头）不是真实任务，不记录。
+
+        单任务「执行」同样记录：它是同一项任务当天跑成功了，
+        与是否勾选「只执行今日未完成」无关。
+        """
+
+        if result.status != RunStatus.SUCCESS or result.task_id.startswith("_"):
+
+            return
+
+        try:
+
+            mark_completed(self.completions_path, result.task_id)
+
+        except OSError as exc:
+
+            self._append_log(f"完成记录写入失败: {exc}")
+
+            return
+
+        self._append_log(f"已记录今日完成: {self._display_task_name_by_id(result.task_id)}")
+
+    def _display_task_name_by_id(self, task_id: str) -> str:
+
+        task = self.task_by_id.get(task_id)
+
+        return task_display_name(task) if task is not None else task_id
 
     @Slot(object)
 

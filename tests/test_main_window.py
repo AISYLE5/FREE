@@ -5,12 +5,22 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from free_app.adb import Device
-from free_app.config import load_json
+from free_app.config import load_json, load_settings
 from free_app.models import BatchRunResult, RunResult, RunStatus
+from free_app.task_completions import (
+    completions_path,
+    format_completion,
+    load_completions,
+    mark_completed,
+    parse_completion,
+    reset_completion,
+    save_completions,
+)
 from free_app.ui_main import MainWindow
 from free_app.ui_settings import SettingsDialog
 from PySide6.QtCore import Qt
@@ -882,6 +892,416 @@ class MainWindowTests(unittest.TestCase):
         self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
         Target.settings = {}
         self.assertIs(MainWindow._effective_screenshots_enabled(Target()), True)
+
+
+class TodayCompletionIntegrationTests(unittest.TestCase):
+    """「今日完成」在主窗口侧的行为：成功后记录、批量过滤。"""
+
+    @staticmethod
+    def _prepare_config(base: Path) -> None:
+        config_directory = base / "config"
+        config_directory.mkdir()
+        (config_directory / "settings.json").write_text(
+            json.dumps({"qq_group_name": "测试群"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        project_tasks = Path(__file__).resolve().parents[1] / "config" / "tasks"
+        shutil.copytree(project_tasks, config_directory / "tasks")
+        project_actions = Path(__file__).resolve().parents[1] / "config" / "actions"
+        if project_actions.exists():
+            shutil.copytree(project_actions, config_directory / "actions")
+
+    def _make_window(self, base: Path) -> MainWindow:
+        QApplication.instance() or QApplication([])
+        with patch.object(MainWindow, "_update_device_status"):
+            return MainWindow(base)
+
+    @staticmethod
+    def _set_setting(window: MainWindow, key: str, value: object) -> None:
+        """把设置写进磁盘再重载。
+
+        ``_start_all_tasks`` 会先 ``_save_task_order()``，那一步从磁盘读-改-写
+        并替换 ``window.settings``；只改内存字典会被它覆盖掉。
+        """
+
+        data = json.loads(window.settings_path.read_text(encoding="utf-8"))
+        data[key] = value
+        window.settings_path.write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+        window.settings = load_settings(window.settings_path)
+
+    def test_successful_single_run_records_completion(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                task = window.tasks[0]
+                window._single_finished(
+                    RunResult(task.id, RunStatus.SUCCESS, 1, 1)
+                )
+
+                completions = load_completions(window.completions_path)
+                self.assertIn(task.id, completions)
+                self.assertIsNotNone(parse_completion(completions[task.id]))
+                self.assertEqual(
+                    window.task_states[task.id], RunStatus.SUCCESS.value
+                )
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_failed_run_does_not_record_completion(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                task = window.tasks[0]
+                window._single_finished(
+                    RunResult(task.id, RunStatus.FAILED, 0, 1, error="boom")
+                )
+                window._batch_task_finished(
+                    RunResult(task.id, RunStatus.STOPPED, 0, 1)
+                )
+
+                self.assertEqual(load_completions(window.completions_path), {})
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_batch_success_records_completion(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                first, second = window.tasks[:2]
+                window.active_tasks = [first, second]
+                window._batch_task_finished(
+                    RunResult(first.id, RunStatus.SUCCESS, 1, 1)
+                )
+
+                completions = load_completions(window.completions_path)
+                self.assertEqual(set(completions), {first.id})
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_internal_debug_task_is_not_recorded(self) -> None:
+        """任务管理页的临时调试任务（id 以 _ 开头）不是真实任务。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                window.task_by_id["_single_action_test"] = window.tasks[0]
+                window._single_finished(
+                    RunResult("_single_action_test", RunStatus.SUCCESS, 1, 1)
+                )
+
+                self.assertEqual(load_completions(window.completions_path), {})
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_completion_write_failure_keeps_task_result(self) -> None:
+        """完成记录写盘失败只记日志，不改变任务本身的成功状态。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                task = window.tasks[0]
+                with patch(
+                    "free_app.ui_main.mark_completed",
+                    side_effect=OSError("disk full"),
+                ):
+                    window._single_finished(
+                        RunResult(task.id, RunStatus.SUCCESS, 1, 1)
+                    )
+
+                self.assertEqual(
+                    window.task_states[task.id], RunStatus.SUCCESS.value
+                )
+                self.assertTrue(
+                    any("完成记录写入失败" in line for line in window._log_pending)
+                )
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_start_all_skips_tasks_completed_today_when_enabled(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", True)
+                self._set_setting(window, "task_execution_counts", {})
+                first, second = window.tasks[:2]
+                mark_completed(window.completions_path, first.id)
+
+                with patch.object(
+                    window, "_prepare_run", return_value=True
+                ) as prepare:
+                    window._start_all_tasks()
+
+                started = [task.id for task in prepare.call_args.args[0]]
+                self.assertNotIn(first.id, started)
+                self.assertIn(second.id, started)
+                self.assertEqual(window.task_states[first.id], "completed_today")
+                self.assertTrue(
+                    any("跳过今日已完成" in line for line in window._log_pending)
+                )
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_start_all_runs_completed_tasks_when_option_disabled(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", False)
+                self._set_setting(window, "task_execution_counts", {})
+                first = window.tasks[0]
+                mark_completed(window.completions_path, first.id)
+
+                with patch.object(
+                    window, "_prepare_run", return_value=True
+                ) as prepare:
+                    window._start_all_tasks()
+
+                started = [task.id for task in prepare.call_args.args[0]]
+                self.assertIn(first.id, started)
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_start_all_ignores_yesterdays_completion(self) -> None:
+        """跨天自动视为未完成：昨天的记录不应导致今天被跳过。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", True)
+                self._set_setting(window, "task_execution_counts", {})
+                first = window.tasks[0]
+                save_completions(
+                    window.completions_path,
+                    {
+                        first.id: format_completion(
+                            datetime.now() - timedelta(days=1)
+                        )
+                    },
+                )
+
+                with patch.object(
+                    window, "_prepare_run", return_value=True
+                ) as prepare:
+                    window._start_all_tasks()
+
+                started = [task.id for task in prepare.call_args.args[0]]
+                self.assertIn(first.id, started)
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_start_all_warns_when_every_task_is_done_today(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", True)
+                self._set_setting(window, "task_execution_counts", {})
+                for task in window.tasks:
+                    mark_completed(window.completions_path, task.id)
+
+                with (
+                    patch.object(window, "_prepare_run", return_value=True) as prepare,
+                    patch("free_app.ui_main.QMessageBox.warning") as warning,
+                ):
+                    window._start_all_tasks()
+
+                prepare.assert_not_called()
+                warning.assert_called_once()
+                self.assertIn("今日已完成", warning.call_args.args[2])
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_single_task_run_ignores_today_completion(self) -> None:
+        """单任务「执行」是手动覆盖，即使今日已完成也照常运行。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", True)
+                task = window.tasks[0]
+                mark_completed(window.completions_path, task.id)
+                window.task_list.setCurrentRow(
+                    [t.id for t in window.tasks].index(task.id)
+                )
+
+                with patch.object(
+                    window, "_prepare_run", return_value=True
+                ) as prepare:
+                    window._start_current_task()
+
+                prepare.assert_called_once()
+                self.assertEqual([t.id for t in prepare.call_args.args[0]], [task.id])
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_completed_today_marker_appears_on_startup_when_enabled(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            settings_path = base / "config" / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {"qq_group_name": "测试群", "respect_today_completion": True},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            first_task = load_json(next((base / "config" / "tasks").glob("*.json")))
+            mark_completed(completions_path(settings_path), first_task["id"])
+
+            window = self._make_window(base)
+            try:
+                self.assertEqual(
+                    window.task_states[first_task["id"]], "completed_today"
+                )
+                for task in window.tasks:
+                    if task.id != first_task["id"]:
+                        self.assertEqual(window.task_states[task.id], "pending")
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_completed_today_marker_absent_when_option_disabled(self) -> None:
+        """选项关闭时列表不标记今日完成，避免误以为该任务不会运行。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                task = window.tasks[0]
+                mark_completed(window.completions_path, task.id)
+
+                window._apply_today_completion_states()
+
+                self.assertEqual(window.task_states[task.id], "pending")
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_resetting_completion_refreshes_main_list_marker(self) -> None:
+        """设置页重置完成时间后回到主页，列表标记必须同步消失。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                self._set_setting(window, "respect_today_completion", True)
+                task = window.tasks[0]
+                mark_completed(window.completions_path, task.id)
+                window._apply_today_completion_states()
+                self.assertEqual(window.task_states[task.id], "completed_today")
+
+                reset_completion(window.completions_path, task.id)
+                window._apply_today_completion_states()
+
+                self.assertEqual(window.task_states[task.id], "pending")
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_disabling_option_clears_stale_completed_marker(self) -> None:
+        """关掉选项后，此前留下的「今日已完成」标记要退回「待执行」。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                task = window.tasks[0]
+                window.task_states[task.id] = "completed_today"
+
+                window._apply_today_completion_states()
+
+                self.assertEqual(window.task_states[task.id], "pending")
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
+
+    def test_marker_sync_never_overwrites_real_run_results(self) -> None:
+        """同步只降级 completed_today，真实运行结果必须原样保留。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._prepare_config(base)
+            window = self._make_window(base)
+            try:
+                first, second, third = window.tasks[:3]
+                window.task_states[first.id] = RunStatus.FAILED.value
+                window.task_states[second.id] = "skipped"
+                window.task_states[third.id] = "completed_today"
+
+                window._apply_today_completion_states()
+
+                self.assertEqual(
+                    window.task_states[first.id], RunStatus.FAILED.value
+                )
+                self.assertEqual(window.task_states[second.id], "skipped")
+                self.assertEqual(window.task_states[third.id], "pending")
+            finally:
+                window.close()
+                window.deleteLater()
+                application.processEvents()
 
 
 if __name__ == "__main__":

@@ -434,6 +434,34 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(settings["max_log_files"], -1)
                 self.assertNotIn("stale_enabled", settings)
 
+    def test_respect_today_completion_is_a_sanitized_boolean(self) -> None:
+        for value, expected in (
+            (True, True),
+            (False, False),
+            ("true", False),  # 字符串不是布尔：回落到默认值
+            (1, False),
+            (None, False),
+        ):
+            with self.subTest(value=value):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "settings.json"
+                    path.write_text(
+                        json.dumps({"respect_today_completion": value}),
+                        encoding="utf-8",
+                    )
+                    settings = load_settings(path)
+
+                self.assertIs(settings["respect_today_completion"], expected)
+
+    def test_respect_today_completion_defaults_to_off(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({}), encoding="utf-8")
+
+            settings = load_settings(path)
+
+        self.assertIs(settings["respect_today_completion"], False)
+
     def test_unknown_smtp_fields_are_removed(self) -> None:
         for unsupported_security in ("invalid", "none"):
             with self.subTest(security=unsupported_security):

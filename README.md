@@ -1,7 +1,7 @@
 # FREE
 
 FREE 是一个 Windows 桌面工具，通过 MuMu Player 12 的 ADB 控制已登录的 Android App，执行签到、奖励领取和分享任务。
-可在「任务管理」中自定义任务流程。
+可在「任务管理」中自定义任务流程，并在设置页的「今日完成」中查看当天各项任务的完成情况、重置完成时间。
 
 ## 使用前准备
 
@@ -43,15 +43,16 @@ FREE/
 │  ├─ notifications.py            # SMTP 通知
 │  ├─ ocr_models.py               # OCR 模型下载与管理
 │  ├─ onnx_ocr.py                 # onnxocr 封装
+│  ├─ task_completions.py         # 任务「今日完成」记录
 │  ├─ task_runner.py              # 任务执行器
 │  ├─ trash.py                    # 文件删除 / 回收站
 │  ├─ ui_common.py                # 共享样式 / 中文消息框 / 控件工厂 / 共享控件
 │  ├─ ui_main.py                  # 主页 + 主窗口容器 + GUI 入口
-│  ├─ ui_settings.py              # 设置页 + 设置对话框（含 OCR 模型下载）
+│  ├─ ui_settings.py              # 设置页 + 设置对话框（含今日完成、OCR 模型下载）
 │  ├─ ui_task_manager.py          # 任务管理页 + 任务编辑器 + 查看器 + 动作表单
 │  └─ worker.py                   # Qt 工作线程任务执行
 ├─ tests\                         # 自动化测试
-├─ config\                        # 用户配置
+├─ config\                        # 用户配置（settings.json 与 task_completions.json 为运行时生成）
 ├─ logs\                          # 运行日志
 ├─ screenshots\                   # 动作/失败截图
 ├─ models\                        # OCR 模型下载目录

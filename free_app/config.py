@@ -52,6 +52,7 @@ NATIVE_SETTING_KEYS = {
     "task_execution_counts",
     "ocr_download_source",
     "log_foreground_package",
+    "respect_today_completion",
 }
 NATIVE_EMAIL_KEYS = {
     "enabled",
@@ -437,6 +438,8 @@ def _sanitize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "close_mumu_after_run": False,
         "close_mumu_app_after_run": False,
         "log_foreground_package": False,
+        # 「执行全部」是否只跑今日未完成的任务（完成记录见 task_completions.py）。
+        "respect_today_completion": False,
     }
     for key, flag_default in bool_defaults.items():
         sanitized[key] = _native_bool(sanitized.get(key), flag_default)

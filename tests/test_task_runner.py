@@ -117,6 +117,66 @@ class TaskRunnerTests(unittest.TestCase):
         )
         self.assertEqual([task.id for task in selected], ["second"])
 
+    def test_batch_tasks_to_run_skips_excluded_task_ids(self) -> None:
+        first = make_task()
+        second = TaskDefinition(
+            id="second",
+            name="Second",
+            package="second.package",
+            actions=(Action("wait", {"seconds": 0}),),
+        )
+        third = TaskDefinition(
+            id="third",
+            name="Third",
+            package="third.package",
+            actions=(Action("wait", {"seconds": 0}),),
+        )
+
+        selected = batch_tasks_to_run(
+            [first, second, third],
+            {"task_execution_counts": {}},
+            exclude_task_ids=["second"],
+        )
+
+        self.assertEqual([task.id for task in selected], ["demo", "third"])
+
+    def test_batch_tasks_to_run_exclusion_applies_alongside_zero_counts(self) -> None:
+        first = make_task()
+        second = TaskDefinition(
+            id="second",
+            name="Second",
+            package="second.package",
+            actions=(Action("wait", {"seconds": 0}),),
+        )
+        third = TaskDefinition(
+            id="third",
+            name="Third",
+            package="third.package",
+            actions=(Action("wait", {"seconds": 0}),),
+        )
+
+        selected = batch_tasks_to_run(
+            [first, second, third],
+            {"task_execution_counts": {"demo": 0, "second": 3, "third": 2}},
+            exclude_task_ids=["second"],
+        )
+
+        # demo 因次数为 0 被跳过，second 因今日已完成被排除，只剩 third。
+        self.assertEqual([task.id for task in selected], ["third"])
+
+    def test_batch_tasks_to_run_excludes_nothing_by_default(self) -> None:
+        first = make_task()
+        second = TaskDefinition(
+            id="second",
+            name="Second",
+            package="second.package",
+            actions=(Action("wait", {"seconds": 0}),),
+        )
+
+        selected = batch_tasks_to_run([first, second], {"task_execution_counts": {}})
+
+        self.assertEqual([task.id for task in selected], ["demo", "second"])
+
     def test_run_task_executions_stops_after_first_success(self) -> None:
         run_attempt = MagicMock(return_value=make_result(RunStatus.SUCCESS))
         cleanup = MagicMock()

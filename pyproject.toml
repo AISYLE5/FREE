@@ -71,11 +71,15 @@ cache-dir = "cache/ruff"
 #           单个异常而中断整条流程）。
 # - DTZ005  datetime.now() 用于本地时间戳文件名（run_*.log / 截图名），
 #           无需时区语义。
+# - DTZ007/DTZ011  「今日完成」记录按用户本地日历日判定，且要与手工编辑的
+#           记录文件（无时区后缀的 "YYYY-MM-DD HH:MM:SS"）互相解析，因此
+#           naive 的 strptime 与 date.today() 正是所需语义；带时区会让
+#           「今日」在跨时区/夏令时下与用户看到的日期不一致。
 # - TRY004  ValueError 是公共配置 API 的约定异常类型（调用方统一捕获），
 #           保持稳定而非按"类型错误"字面归类。
 # - RUF012  类属性常量表（_UI_TASK_NAMES/_STATE_LABELS/_STATE_COLORS 等）
 #           只读使用，不改动。
-ignore = ["BLE001", "DTZ005", "TRY004", "RUF012"]
+ignore = ["BLE001", "DTZ005", "DTZ007", "DTZ011", "TRY004", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
 # 测试里嵌套 with 是常见可读写法；DTZ001 用于构造固定时刻做断言。

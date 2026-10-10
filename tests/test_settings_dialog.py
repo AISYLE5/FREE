@@ -4,10 +4,17 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from free_app.ocr_models import DownloadCancelled
+from free_app.task_completions import (
+    completions_path,
+    format_completion,
+    load_completions,
+    save_completions,
+)
 from free_app.ui_common import SettingsComboBox
 from free_app.ui_settings import (
     ModelDownloadWorker,
@@ -15,7 +22,7 @@ from free_app.ui_settings import (
 )
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QScrollArea
 
 
 class SettingsDialogTests(unittest.TestCase):
@@ -1057,6 +1064,274 @@ class SettingsDialogTests(unittest.TestCase):
             self.assertEqual(saved["max_log_files"], 5)
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
+
+
+class SettingsTodayCompletionPageTests(unittest.TestCase):
+    """设置页「今日完成」分页：勾选项、完成情况展示与重置。"""
+
+    def _make_dialog(self, base: Path, settings: dict | None = None) -> SettingsDialog:
+        QApplication.instance() or QApplication([])
+        config_directory = base / "config"
+        config_directory.mkdir(exist_ok=True)
+        settings_path = config_directory / "settings.json"
+        settings_path.write_text(
+            json.dumps(settings or {"qq_group_name": "测试群"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tasks_directory = config_directory / "tasks"
+        if not tasks_directory.exists():
+            project_tasks = Path(__file__).resolve().parents[1] / "config" / "tasks"
+            shutil.copytree(project_tasks, tasks_directory)
+        actions_directory = config_directory / "actions"
+        if not actions_directory.exists():
+            project_actions = Path(__file__).resolve().parents[1] / "config" / "actions"
+            shutil.copytree(project_actions, actions_directory)
+        with patch.object(SettingsDialog, "_refresh_mumu_instances"):
+            return SettingsDialog(settings_path, base_directory=base)
+
+    @staticmethod
+    def _moment(days_ago: int = 0, hour: int = 9) -> str:
+        day = datetime.now() - timedelta(days=days_ago)
+        return format_completion(day.replace(hour=hour, minute=30, second=0))
+
+    def test_completion_page_lists_every_task_with_pending_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                self.assertEqual(
+                    set(dialog._completion_rows), {task.id for task in dialog.tasks}
+                )
+                for state_label, reset_button in dialog._completion_rows.values():
+                    self.assertEqual(state_label.text(), "今日未完成")
+                    # 没有记录时"重置"无处可重置。
+                    self.assertFalse(reset_button.isEnabled())
+            finally:
+                dialog.deleteLater()
+
+    def test_completion_rows_show_today_and_stale_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                save_completions(
+                    completions_path(base / "config" / "settings.json"),
+                    {
+                        "hanserclub": self._moment(0),
+                        "xiaoheihe": self._moment(3),
+                    },
+                )
+                dialog.refresh_values()
+
+                done_label, done_button = dialog._completion_rows["hanserclub"]
+                self.assertIn("今日已完成", done_label.text())
+                self.assertIn("09:30:00", done_label.text())
+                self.assertTrue(done_button.isEnabled())
+
+                stale_label, stale_button = dialog._completion_rows["xiaoheihe"]
+                self.assertIn("未完成", stale_label.text())
+                self.assertNotIn("今日已完成", stale_label.text())
+                self.assertTrue(stale_button.isEnabled())
+
+                pending_label, _ = dialog._completion_rows["bilibili_pts"]
+                self.assertEqual(pending_label.text(), "今日未完成")
+            finally:
+                dialog.deleteLater()
+
+    def test_reset_completion_clears_record_and_refreshes_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            settings_path = base / "config" / "settings.json"
+            try:
+                save_completions(
+                    completions_path(settings_path), {"hanserclub": self._moment(0)}
+                )
+                dialog.refresh_values()
+
+                with patch(
+                    "free_app.ui_settings.confirm_dialog", return_value=True
+                ):
+                    dialog._reset_completion("hanserclub")
+
+                self.assertEqual(load_completions(completions_path(settings_path)), {})
+                state_label, reset_button = dialog._completion_rows["hanserclub"]
+                self.assertEqual(state_label.text(), "今日未完成")
+                self.assertFalse(reset_button.isEnabled())
+            finally:
+                dialog.deleteLater()
+
+    def test_reset_completion_keeps_record_when_not_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            settings_path = base / "config" / "settings.json"
+            try:
+                save_completions(
+                    completions_path(settings_path), {"hanserclub": self._moment(0)}
+                )
+                dialog.refresh_values()
+
+                with patch(
+                    "free_app.ui_settings.confirm_dialog", return_value=False
+                ):
+                    dialog._reset_completion("hanserclub")
+
+                self.assertIn(
+                    "hanserclub", load_completions(completions_path(settings_path))
+                )
+            finally:
+                dialog.deleteLater()
+
+    def test_reset_all_completions_clears_every_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            settings_path = base / "config" / "settings.json"
+            try:
+                save_completions(
+                    completions_path(settings_path),
+                    {"hanserclub": self._moment(0), "xiaoheihe": self._moment(0)},
+                )
+                dialog.refresh_values()
+
+                with patch("free_app.ui_settings.confirm_dialog", return_value=True):
+                    dialog._reset_all_completions()
+
+                self.assertEqual(load_completions(completions_path(settings_path)), {})
+                for state_label, _ in dialog._completion_rows.values():
+                    self.assertEqual(state_label.text(), "今日未完成")
+            finally:
+                dialog.deleteLater()
+
+    def test_reset_completion_reports_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                save_completions(
+                    completions_path(base / "config" / "settings.json"),
+                    {"hanserclub": self._moment(0)},
+                )
+                dialog.refresh_values()
+
+                with (
+                    patch("free_app.ui_settings.confirm_dialog", return_value=True),
+                    patch(
+                        "free_app.ui_settings.reset_completion",
+                        side_effect=OSError("disk full"),
+                    ),
+                    patch("free_app.ui_settings.QMessageBox.warning") as warning,
+                ):
+                    dialog._reset_completion("hanserclub")
+
+                warning.assert_called_once()
+            finally:
+                dialog.deleteLater()
+
+    def test_respect_today_completion_checkbox_loads_saves_and_detects_change(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base, {"respect_today_completion": True})
+            settings_path = base / "config" / "settings.json"
+            try:
+                self.assertTrue(dialog.respect_today_completion.isChecked())
+                self.assertFalse(dialog._has_unsaved_changes())
+
+                dialog.respect_today_completion.setChecked(False)
+                self.assertTrue(dialog._has_unsaved_changes())
+
+                dialog._save()
+                saved = json.loads(settings_path.read_text(encoding="utf-8"))
+                self.assertIs(saved["respect_today_completion"], False)
+            finally:
+                dialog.deleteLater()
+
+    def test_respect_today_completion_defaults_to_unchecked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base, {})
+            try:
+                self.assertFalse(dialog.respect_today_completion.isChecked())
+                self.assertIs(
+                    dialog._collect_settings()["respect_today_completion"], False
+                )
+            finally:
+                dialog.deleteLater()
+
+    def test_completion_rows_follow_task_additions_after_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                self.assertNotIn("brand_new_task", dialog._completion_rows)
+                (
+                    base / "config" / "tasks" / "brand_new_task.json"
+                ).write_text(
+                    json.dumps(
+                        {
+                            "id": "brand_new_task",
+                            "name": "新任务",
+                            "package": "brand.new",
+                            "actions": [{"type": "wait", "seconds": 1}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                dialog.refresh_values()
+
+                self.assertIn("brand_new_task", dialog._completion_rows)
+                state_label, _ = dialog._completion_rows["brand_new_task"]
+                self.assertEqual(state_label.text(), "今日未完成")
+            finally:
+                dialog.deleteLater()
+
+    def test_completion_page_has_its_own_nav_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                nav = dialog.findChild(QListWidget, "settingsNav")
+                self.assertIsNotNone(nav)
+                assert nav is not None
+                labels = [nav.item(row).text() for row in range(nav.count())]
+                self.assertIn("今日完成", labels)
+                self.assertEqual(labels.index("今日完成"), 2)
+                self.assertEqual(dialog.stack.count(), nav.count())
+            finally:
+                dialog.deleteLater()
+
+    def test_completion_page_has_no_horizontal_overflow(self) -> None:
+        """长路径说明不得把内容区撑出横向滚动条。"""
+
+        application = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                dialog.resize(980, 640)
+                dialog.show()
+                application.processEvents()
+                dialog.stack.setCurrentIndex(2)
+                for _ in range(4):
+                    application.processEvents()
+
+                scroll = dialog.stack.currentWidget().findChild(QScrollArea)
+                self.assertIsNotNone(scroll)
+                assert scroll is not None
+                self.assertLessEqual(
+                    scroll.widget().minimumSizeHint().width(),
+                    scroll.viewport().width(),
+                )
+                self.assertFalse(scroll.horizontalScrollBar().isVisible())
+            finally:
+                dialog.close()
+                dialog.deleteLater()
+                application.processEvents()
 
 
 if __name__ == "__main__":

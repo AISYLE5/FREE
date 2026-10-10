@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from threading import Event
 from typing import Any
 
@@ -25,15 +25,20 @@ def task_execution_count(settings: dict[str, Any], task_id: str) -> int:
 def batch_tasks_to_run(
     tasks: list[TaskDefinition] | tuple[TaskDefinition, ...],
     settings: dict[str, Any],
+    exclude_task_ids: Iterable[str] = (),
 ) -> list[TaskDefinition]:
     """返回“执行全部”批量执行时应运行的任务。
 
-    执行次数为 0 的任务被跳过。每个返回的任务只出现一次；
+    执行次数为 0 的任务被跳过；``exclude_task_ids`` 中的任务也被跳过
+    （调用方用于「只执行今日未完成」）。每个返回的任务只出现一次；
     允许的尝试次数由 :func:`run_task_executions` 处理。
     """
 
+    excluded = set(exclude_task_ids)
     selected: list[TaskDefinition] = []
     for task in tasks:
+        if task.id in excluded:
+            continue
         if task_execution_count(settings, task.id) > 0:
             selected.append(task)
     return selected

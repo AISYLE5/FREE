@@ -12,3 +12,4 @@ screenshots/
 models/
 cache/
 /config/settings.json
+/config/task_completions.json

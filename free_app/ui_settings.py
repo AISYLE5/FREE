@@ -1,8 +1,8 @@
 """设置页与设置对话框（含 OCR 模型下载）。
 
 ``SettingsPage``：设置页面外壳（页头 + 内容区）。
-``SettingsDialog``：MuMu/ADB 路径、执行与清理、重试、OCR 模型选择与下载、
-SMTP 邮件的分页设置；``_FieldBinding`` 一张表驱动控件的读写与收集，保存经
+``SettingsDialog``：MuMu/ADB 路径、执行与清理、重试、今日完成、OCR 模型选择与
+下载、SMTP 邮件的分页设置；``_FieldBinding`` 一张表驱动控件的读写与收集，保存经
 ``config.update_settings()`` 单点读-改-写。
 ``ModelDownloadWorker``：后台下载 OCR 模型。
 
@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +23,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -79,6 +81,13 @@ from .ocr_models import (
     model_root,
 )
 from .onnx_ocr import OnnxOcrClient
+from .task_completions import (
+    completion_moment,
+    completions_path,
+    load_completions,
+    reset_completion,
+    reset_completions,
+)
 from .trash import clear_output_files
 from .ui_common import (
     CARD_TITLE_QSS,
@@ -102,6 +111,7 @@ from .ui_common import (
     mount_scrollable_page,
     outline_button,
     page_header,
+    refresh_style,
     scrollable_page,
 )
 
@@ -244,6 +254,12 @@ _TOP_LEVEL_FIELDS: tuple[_FieldBinding, ...] = (
             max(0, d.download_source_combo.findData(v))
         ),
     ),
+    _FieldBinding(
+        "respect_today_completion",
+        lambda d: d.respect_today_completion.isChecked(),
+        lambda s: bool(s.get("respect_today_completion", False)),
+        lambda d, v: d.respect_today_completion.setChecked(bool(v)),
+    ),
 )
 
 _EMAIL_FIELDS: tuple[_FieldBinding, ...] = (
@@ -382,6 +398,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self._build_ui()
         self._load_setting_values()
         self._load_model_values()
+        self._refresh_completion_rows()
 
     def _build_ui(self) -> None:
         self.setWindowTitle("FREE · 设置")
@@ -405,7 +422,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         nav = QListWidget()
         nav.setObjectName("settingsNav")
         nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        nav.addItems(["运行设置", "执行次数", "OCR 模型", "邮件通知"])
+        nav.addItems(["运行设置", "执行次数", "今日完成", "OCR 模型", "邮件通知"])
         nav.setFrameShape(QFrame.Shape.NoFrame)
         nav.setSpacing(6)
         nav.setUniformItemSizes(True)
@@ -422,6 +439,8 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         stacked.addWidget(self._build_run_page())
         self._retry_page = self._build_retry_page()
         stacked.addWidget(self._retry_page)
+        self._completion_page = self._build_completion_page()
+        stacked.addWidget(self._completion_page)
         stacked.addWidget(self._build_ocr_page())
         stacked.addWidget(self._build_email_page())
 
@@ -678,6 +697,164 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         mount_scrollable_page(page, scroll, content)
         return container
 
+    def _build_completion_page(self) -> QWidget:
+        container, page, scroll, content, content_layout = scrollable_page()
+        # 副标题只放短文本：QLabel 不换行时其最小宽度等于整行文字宽度，
+        # 会把内容区撑得比视口宽而挤出横向滚动条。长说明一律用
+        # setWordWrap(True) 的标签（换行标签的最小宽度很小）。
+        content_layout.addWidget(
+            self._build_page_heading(
+                "今日完成",
+                "任务成功执行后自动记录完成时间，跨天自动视为未完成。",
+                note=date.today().strftime("%Y-%m-%d"),
+            )
+        )
+
+        # 顶部：是否让「执行全部」只跑今日未完成的任务。
+        option_card = QFrame()
+        option_card.setObjectName("settingsOptionCard")
+        option_layout = QVBoxLayout(option_card)
+        option_layout.setContentsMargins(22, 20, 22, 20)
+        option_layout.setSpacing(8)
+        self.respect_today_completion = QCheckBox(
+            "执行全部时只执行今日未完成的项目"
+        )
+        self.respect_today_completion.setObjectName("settingsRespectToday")
+        option_layout.addWidget(self.respect_today_completion)
+        hint = QLabel(
+            "勾选后，「执行全部」会跳过当天已完成的任务；"
+            "单个任务的「执行」不受影响，始终强制运行。"
+        )
+        hint.setObjectName("settingsSectionNote")
+        hint.setWordWrap(True)
+        option_layout.addWidget(hint)
+        content_layout.addWidget(option_card)
+
+        # 任务行：每行显示名称 / id / 今日完成时间 + 重置按钮。
+        self._completion_rows: dict[str, tuple[QLabel, QPushButton]] = {}
+        completion_card = QFrame()
+        completion_card.setObjectName("settingsOptionCard")
+        completion_layout = QVBoxLayout(completion_card)
+        completion_layout.setContentsMargins(22, 20, 22, 20)
+        completion_layout.setSpacing(10)
+        self._completion_rows_layout = completion_layout
+        self._completion_empty_label = QLabel("任务目录中没有可执行任务。")
+        self._completion_empty_label.setObjectName("settingsSectionNote")
+        self._completion_empty_label.setVisible(not self.tasks)
+        completion_layout.addWidget(self._completion_empty_label)
+        for task in self.tasks:
+            completion_layout.addWidget(self._build_completion_row(task.id, task.name))
+        content_layout.addWidget(completion_card)
+
+        # 记录文件路径可能很长；用 ElidedLabel 避免这一行不可断行而撑宽内容区
+        # （普通 QLabel 的最小宽度等于整行文字宽度，会挤出横向滚动条）。
+        record_note = ElidedLabel(f"完成记录文件：{completions_path(self.settings_path)}")
+        record_note.setObjectName("settingsSectionNote")
+        record_note.setToolTip(str(completions_path(self.settings_path)))
+        content_layout.addWidget(record_note)
+
+        footer_row = QHBoxLayout()
+        footer_row.setSpacing(8)
+        self.reset_all_completions_button = danger_button(
+            "重置全部完成时间", minimum_width=OUTPUT_CLEAR_BUTTON_MIN_WIDTH
+        )
+        self.reset_all_completions_button.clicked.connect(self._reset_all_completions)
+        footer_row.addStretch(1)
+        footer_row.addWidget(self.reset_all_completions_button)
+        content_layout.addLayout(footer_row)
+        content_layout.addStretch(1)
+        mount_scrollable_page(page, scroll, content)
+        return container
+
+    def _build_completion_row(self, task_id: str, task_name: str) -> QFrame:
+        row = QFrame()
+        row.setObjectName("settingsRetryRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(16, 12, 14, 12)
+        row_layout.setSpacing(10)
+
+        name_label = QLabel(task_name)
+        name_label.setObjectName("settingsRunLabel")
+        expanding(name_label, vertical="preferred")
+        row_layout.addWidget(name_label, 1)
+
+        id_label = QLabel(task_id)
+        id_label.setObjectName("settingsRetryId")
+        row_layout.addWidget(id_label)
+
+        state_label = QLabel()
+        state_label.setObjectName("settingsCompletionState")
+        state_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        row_layout.addWidget(state_label)
+
+        reset_button = outline_button("重置", object_name="settingsModelAction")
+        reset_button.clicked.connect(
+            lambda _checked=False, tid=task_id: self._reset_completion(tid)
+        )
+        row_layout.addWidget(reset_button)
+        self._completion_rows[task_id] = (state_label, reset_button)
+        return row
+
+    def _refresh_completion_rows(self) -> None:
+        """按磁盘上的完成记录刷新每一行的状态文案与按钮可用性。"""
+
+        completions = load_completions(completions_path(self.settings_path))
+        today = date.today()
+        for task_id, (state_label, reset_button) in self._completion_rows.items():
+            moment = completion_moment(completions, task_id)
+            if moment is not None and moment.date() == today:
+                state_label.setText(f"今日已完成 · {moment.strftime('%H:%M:%S')}")
+                state_label.setProperty("state", "done")
+                reset_button.setEnabled(True)
+            elif moment is not None:
+                # 昨天的记录不算今日完成；保留展示以免用户误以为记录丢了。
+                state_label.setText(f"未完成（上次 {moment.strftime('%m-%d %H:%M')}）")
+                state_label.setProperty("state", "stale")
+                reset_button.setEnabled(True)
+            else:
+                state_label.setText("今日未完成")
+                state_label.setProperty("state", "pending")
+                reset_button.setEnabled(False)
+            refresh_style(state_label)
+
+    @Slot(str)
+    def _reset_completion(self, task_id: str) -> None:
+        """重置单个任务的完成时间（重置为未完成）。"""
+
+        if not confirm_dialog(
+            self,
+            "重置完成时间",
+            f"确定把任务 {task_id} 重置为今日未完成吗？",
+        ):
+            return
+        try:
+            reset_completion(completions_path(self.settings_path), task_id)
+        except OSError as exc:
+            QMessageBox.warning(self, "重置失败", str(exc))
+            return
+        self._refresh_completion_rows()
+
+    @Slot()
+    def _reset_all_completions(self) -> None:
+        """清空全部任务的完成记录。"""
+
+        if not self._completion_rows:
+            return
+        if not confirm_dialog(
+            self,
+            "重置全部",
+            "确定清空所有任务的完成时间吗？清空后它们都会被视为今日未完成。",
+        ):
+            return
+        try:
+            reset_completions(completions_path(self.settings_path))
+        except OSError as exc:
+            QMessageBox.warning(self, "重置失败", str(exc))
+            return
+        self._refresh_completion_rows()
+
     def _build_ocr_page(self) -> QWidget:
         container, page, scroll, content, ocr_layout = scrollable_page()
         ocr_header = QHBoxLayout()
@@ -926,9 +1103,10 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self._smtp_port_edited = False
         self._load_setting_values()
         self._load_model_values()
+        self._refresh_completion_rows()
 
     def _reload_tasks(self) -> None:
-        """重读任务目录并重建执行次数页的行。"""
+        """重读任务目录并重建执行次数页与今日完成页的行。"""
 
         tasks_directory = self.base_directory / "config" / "tasks"
         raw_tasks, _config_errors = load_task_directory(
@@ -943,7 +1121,31 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         self._retry_page.deleteLater()
         self.stack.insertWidget(1, new_page)
         self._retry_page = new_page
+        self._rebuild_completion_rows()
         self.stack.setCurrentIndex(current_index)
+
+    def _rebuild_completion_rows(self) -> None:
+        """任务增删后重建「今日完成」页的行，并刷新状态。
+
+        ``QLayout.removeWidget`` 与 ``QStackedWidget.removeWidget`` 不同：
+        它**不会隐藏**控件，被移出的行会留在原几何位置继续绘制，
+        直到 ``deleteLater`` 真正执行。因此这里显式 ``setParent(None)``
+        立刻把它从父控件上摘下来。
+        """
+
+        for _state_label, _reset_button in self._completion_rows.values():
+            row = _state_label.parentWidget()
+            if row is not None:
+                self._completion_rows_layout.removeWidget(row)
+                row.setParent(None)
+                row.deleteLater()
+        self._completion_rows.clear()
+        self._completion_empty_label.setVisible(not self.tasks)
+        for task in self.tasks:
+            self._completion_rows_layout.addWidget(
+                self._build_completion_row(task.id, task.name)
+            )
+        self._refresh_completion_rows()
 
     def _reapply_model_selection(self) -> None:
         """保留当前选中模型；其已不再安装时回退。"""
@@ -1584,6 +1786,20 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             "                color: #718783;\n"
             "                font-size: 12px;\n"
             "                min-width: 100px;\n"
+            "            }\n"
+            "            QLabel#settingsCompletionState {\n"
+            "                font-size: 12px;\n"
+            "                font-weight: 600;\n"
+            "                min-width: 150px;\n"
+            "            }\n"
+            "            QLabel#settingsCompletionState[state=\"done\"] {\n"
+            "                color: #1f7a4c;\n"
+            "            }\n"
+            "            QLabel#settingsCompletionState[state=\"stale\"] {\n"
+            "                color: #9a6a24;\n"
+            "            }\n"
+            "            QLabel#settingsCompletionState[state=\"pending\"] {\n"
+            "                color: #718783;\n"
             "            }\n"
             "            QFormLayout QLabel {\n"
             "                color: #49615f;\n"
