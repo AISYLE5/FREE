@@ -14,7 +14,8 @@ from free_app.ui_task_manager import (
     TaskManagerWidget,
     UiTreeDumpWidget,
 )
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel
 
 
 class TaskEditorTests(unittest.TestCase):
@@ -1491,6 +1492,70 @@ class UiTreeDumpWidgetTests(unittest.TestCase):
                 warning.assert_called_once_with(
                     "获取包名失败",
                     "未识别到前台应用包名。",
+                )
+            finally:
+                manager.deleteLater()
+
+    def test_timed_warning_toast_is_an_overlay_child_widget(self) -> None:
+        """提示必须是父控件内的浮层，不能是独立置顶窗口。
+
+        独立窗口要圆角就得开 ``WA_TranslucentBackground``，那样 QLabel 会
+        自带不透明底色、与手绘圆角矩形打架（旧实现的问题）。用子控件则
+        完全由 QSS 绘制，也不会出现文字底色与提示框底不一致。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            manager = self._make_widget(base)
+            try:
+                manager._show_timed_warning("抓取 UI 树失败", "MuMu 未返回动态 ADB 地址")
+                QApplication.processEvents()
+                toast = manager._task_toast
+                self.assertIsNotNone(toast)
+                assert toast is not None
+
+                self.assertFalse(toast.isWindow())
+                self.assertEqual(toast.parentWidget(), manager)
+                self.assertFalse(
+                    toast.testAttribute(
+                        Qt.WidgetAttribute.WA_TranslucentBackground
+                    )
+                )
+                # 文字与背景都由样式表绘制，不再手绘。
+                self.assertEqual(toast.objectName(), "taskToast")
+
+                titles = toast.findChildren(QLabel, "taskToastTitle")
+                messages = toast.findChildren(QLabel, "taskToastMessage")
+                self.assertEqual([label.text() for label in titles], ["抓取 UI 树失败"])
+                self.assertEqual(
+                    [label.text() for label in messages],
+                    ["MuMu 未返回动态 ADB 地址"],
+                )
+            finally:
+                manager.deleteLater()
+
+    def test_warning_toast_keeps_inside_parent_bounds(self) -> None:
+        """提示居中但不越出父控件（窗口很窄时不会把提示裁掉）。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            manager = self._make_widget(base)
+            try:
+                manager.resize(320, 240)
+                manager._show_timed_warning("失败", "一条比较长的错误说明文字，用于触发换行。")
+                QApplication.processEvents()
+                toast = manager._task_toast
+                self.assertIsNotNone(toast)
+                assert toast is not None
+                toast._move_to_parent_corner()
+                area = manager.rect()
+                self.assertGreaterEqual(toast.x(), area.left())
+                self.assertGreaterEqual(toast.y(), area.top())
+                self.assertLessEqual(
+                    toast.x() + toast.width(), area.right() + 1
+                )
+                self.assertLessEqual(
+                    toast.y() + toast.height(), area.bottom() + 1
                 )
             finally:
                 manager.deleteLater()

@@ -22,7 +22,13 @@ from free_app.ui_settings import (
 )
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QScrollArea
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QListWidget,
+    QScrollArea,
+)
 
 
 class SettingsDialogTests(unittest.TestCase):
@@ -1065,6 +1071,55 @@ class SettingsDialogTests(unittest.TestCase):
             self.assertEqual(saved["task_execution_counts"]["hanserclub"], 1)
             dialog.deleteLater()
 
+    def test_ocr_source_label_has_no_feedback_chip_background(self) -> None:
+        """「下载源」是静态文字标签，不能用状态提示块的样式。
+
+        ``settingsOcrFeedback`` 带浅底与圆角（给会消失的状态消息用），
+        套在静态标签上会在页头留下一个与底色不一致的方块。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                labels = [
+                    label
+                    for label in dialog.findChildren(QLabel)
+                    if label.text() == "下载源"
+                ]
+                self.assertTrue(labels, "未找到「下载源」标签")
+                self.assertNotEqual(
+                    labels[0].objectName(), "settingsOcrFeedback"
+                )
+            finally:
+                dialog.deleteLater()
+
+    def test_ocr_feedback_label_hidden_until_there_is_a_message(self) -> None:
+        """空的状态提示标签不应占位，否则会画出一块背景色。
+
+        断言用 ``isHidden()`` 而非 ``isVisible()``：对话框未 show() 时
+        整条父链都不可见，``isVisible()`` 恒为 False，区分不出自身状态。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            dialog = self._make_dialog(base)
+            try:
+                self.assertEqual(dialog.ocr_feedback_label.text(), "")
+                self.assertTrue(dialog.ocr_feedback_label.isHidden())
+
+                dialog._set_ocr_feedback("已刷新 · 2 个模型已下载")
+                self.assertEqual(
+                    dialog.ocr_feedback_label.text(), "已刷新 · 2 个模型已下载"
+                )
+                self.assertFalse(dialog.ocr_feedback_label.isHidden())
+
+                dialog._clear_ocr_feedback()
+                self.assertEqual(dialog.ocr_feedback_label.text(), "")
+                self.assertTrue(dialog.ocr_feedback_label.isHidden())
+            finally:
+                dialog.deleteLater()
+
 
 class SettingsTodayCompletionPageTests(unittest.TestCase):
     """设置页「今日完成」分页：勾选项、完成情况展示与重置。"""
@@ -1229,7 +1284,7 @@ class SettingsTodayCompletionPageTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_respect_today_completion_checkbox_loads_saves_and_detects_change(
+    def test_respect_today_completion_combo_loads_saves_and_detects_change(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1237,10 +1292,15 @@ class SettingsTodayCompletionPageTests(unittest.TestCase):
             dialog = self._make_dialog(base, {"respect_today_completion": True})
             settings_path = base / "config" / "settings.json"
             try:
-                self.assertTrue(dialog.respect_today_completion.isChecked())
+                # 与其他布尔设置一致：用「开/关」下拉框而不是复选框。
+                self.assertIs(
+                    dialog.respect_today_completion.currentData(), True
+                )
                 self.assertFalse(dialog._has_unsaved_changes())
 
-                dialog.respect_today_completion.setChecked(False)
+                dialog.respect_today_completion.setCurrentIndex(
+                    dialog.respect_today_completion.findData(False)
+                )
                 self.assertTrue(dialog._has_unsaved_changes())
 
                 dialog._save()
@@ -1249,12 +1309,14 @@ class SettingsTodayCompletionPageTests(unittest.TestCase):
             finally:
                 dialog.deleteLater()
 
-    def test_respect_today_completion_defaults_to_unchecked(self) -> None:
+    def test_respect_today_completion_defaults_to_off(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             dialog = self._make_dialog(base, {})
             try:
-                self.assertFalse(dialog.respect_today_completion.isChecked())
+                self.assertIs(
+                    dialog.respect_today_completion.currentData(), False
+                )
                 self.assertIs(
                     dialog._collect_settings()["respect_today_completion"], False
                 )

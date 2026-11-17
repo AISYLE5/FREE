@@ -23,7 +23,6 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -259,9 +258,11 @@ _TOP_LEVEL_FIELDS: tuple[_FieldBinding, ...] = (
     ),
     _FieldBinding(
         "respect_today_completion",
-        lambda d: d.respect_today_completion.isChecked(),
+        lambda d: d.respect_today_completion.currentData(),
         lambda s: bool(s.get("respect_today_completion", False)),
-        lambda d, v: d.respect_today_completion.setChecked(bool(v)),
+        lambda d, v: SettingsDialog._set_bool_combo(
+            d.respect_today_completion, bool(v)
+        ),
     ),
 )
 
@@ -714,18 +715,23 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         )
 
         # 顶部：是否让「执行全部」只跑今日未完成的任务。
+        # 用与其他布尔设置一致的「开/关」下拉框（见 _make_bool_combo），
+        # 不用复选框——设置页的布尔项统一走同一种控件。
         option_card = QFrame()
         option_card.setObjectName("settingsOptionCard")
         option_layout = QVBoxLayout(option_card)
         option_layout.setContentsMargins(22, 20, 22, 20)
-        option_layout.setSpacing(8)
-        self.respect_today_completion = QCheckBox(
-            "执行全部时只执行今日未完成的项目"
+        option_layout.setSpacing(10)
+
+        option_form = self._build_form_layout(24)
+        self.respect_today_completion = self._make_bool_combo(
+            "respect_today_completion"
         )
-        self.respect_today_completion.setObjectName("settingsRespectToday")
-        option_layout.addWidget(self.respect_today_completion)
+        option_form.addRow("只执行今日未完成的项目", self.respect_today_completion)
+        option_layout.addLayout(option_form)
+
         hint = QLabel(
-            "勾选后，「执行全部」会跳过当天已完成的任务；"
+            "开启后，「执行全部」会跳过当天已完成的任务；"
             "单个任务的「执行」不受影响，始终强制运行。"
         )
         hint.setObjectName("settingsSectionNote")
@@ -753,7 +759,6 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         # （普通 QLabel 的最小宽度等于整行文字宽度，会挤出横向滚动条）。
         record_note = ElidedLabel(f"完成记录文件：{completions_path(self.settings_path)}")
         record_note.setObjectName("settingsSectionNote")
-        record_note.setToolTip(str(completions_path(self.settings_path)))
         content_layout.addWidget(record_note)
 
         footer_row = QHBoxLayout()
@@ -865,7 +870,10 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         ocr_header.addWidget(self._build_page_heading("OCR 模型"))
         ocr_header.addStretch(1)
         source_label = QLabel("下载源")
-        source_label.setObjectName("settingsOcrFeedback")
+        # 用 settingsSectionSubtitle（12px 灰字、无背景）而不是
+        # settingsOcrFeedback——后者是给"会出现的状态提示"准备的浅底圆角块，
+        # 套在静态文字标签上会多出一个与页面底色不一致的背景块。
+        source_label.setObjectName("settingsSectionSubtitle")
         self.download_source_combo = SettingsComboBox()
         self.download_source_combo.addItem("自动", AUTO_SOURCE)
         for key in SOURCE_KEYS:
@@ -875,6 +883,9 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
         ocr_header.addWidget(self.download_source_combo)
         self.ocr_feedback_label = QLabel("")
         self.ocr_feedback_label.setObjectName("settingsOcrFeedback")
+        # 无消息时不占位、不绘制背景块：这个标签平时是空的，
+        # 若保持可见会在页头上留下一块与底色不一致的浅底方块。
+        self.ocr_feedback_label.setVisible(False)
         ocr_header.addWidget(self.ocr_feedback_label)
         self.test_ocr_button = outline_button(
             "测试识别", object_name=BUTTON_SECONDARY
@@ -1087,11 +1098,17 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
             self.refresh_ocr_button.setText("刷新")
             self.refresh_ocr_button.setEnabled(True)
         downloaded = sum(1 for present in installed.values() if present)
-        self.ocr_feedback_label.setText(f"已刷新 · {downloaded} 个模型已下载")
+        self._set_ocr_feedback(f"已刷新 · {downloaded} 个模型已下载")
         QTimer.singleShot(2500, self._clear_ocr_feedback)
 
+    def _set_ocr_feedback(self, message: str) -> None:
+        """显示一条 OCR 反馈；空文本等价于清除。"""
+
+        self.ocr_feedback_label.setText(message)
+        self.ocr_feedback_label.setVisible(bool(message))
+
     def _clear_ocr_feedback(self) -> None:
-        self.ocr_feedback_label.clear()
+        self._set_ocr_feedback("")
 
     def refresh_values(self) -> None:
         """页面重新打开时重载表单。
@@ -1229,7 +1246,7 @@ class SettingsDialog(BackgroundTaskOwner, QDialog):
 
     def _on_download_cancelled(self, name: str) -> None:
         self._refresh_model_statuses()
-        self.ocr_feedback_label.setText(f"已取消 {name} 的下载")
+        self._set_ocr_feedback(f"已取消 {name} 的下载")
         QTimer.singleShot(2500, self._clear_ocr_feedback)
 
     def _download_finished(self, name: str) -> None:

@@ -10,12 +10,9 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
-    QColor,
     QDoubleValidator,
     QFont,
     QGuiApplication,
-    QPainter,
-    QPen,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -140,9 +137,6 @@ class TaskManagerPage(QWidget):
             width=TOOL_BUTTON_WIDTH,
         )
         self.task_manager_pointer_button.setCheckable(True)
-        self.task_manager_pointer_button.setToolTip(
-            "在 MuMu 模拟器中显示或隐藏鼠标坐标"
-        )
         self.task_manager_pointer_button.hide()
         self.task_manager_pointer_button.toggled.connect(self._on_pointer_toggled)
         header.addWidget(self.task_manager_pointer_button)
@@ -150,7 +144,6 @@ class TaskManagerPage(QWidget):
         self.task_manager_copy_package_button = secondary_button(
             "获取包名", width=TOOL_BUTTON_WIDTH
         )
-        self.task_manager_copy_package_button.setToolTip("获取当前前台应用包名")
         self.task_manager_copy_package_button.hide()
         header.addWidget(self.task_manager_copy_package_button)
 
@@ -317,55 +310,60 @@ class _EntryListPanel:
     on_empty: Callable[[], None]  # 列表为空且无选中时的兜底
 
 class _TaskToast(QFrame):
-    """任务管理页短暂错误提示用的非模态通知。"""
+    """任务管理页短暂错误提示用的非模态通知。
+
+    实现为**父控件内的浮层子控件**，而不是独立的置顶窗口：
+
+    - 独立窗口（``Qt.Tool`` + ``FramelessWindowHint``）必须开
+      ``WA_TranslucentBackground`` 才能有圆角，但那样 QLabel 会自带不透明
+      底色、与手绘的圆角矩形打架，还会在圆角处留下锯齿和黑边。
+    - 作为子控件则完全由 QSS 绘制（背景/边框/圆角/内边距一处定义），
+      不需要 ``paintEvent``，也不会出现文字底色与提示框底色不一致。
+    """
 
     def __init__(self, parent: QWidget, title: str, message: str) -> None:
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent)
         self.setObjectName("taskToast")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
             f"""
             QFrame#taskToast {{
-                background: {_t.DANGER_FILL};
+                background: {_t.SURFACE_CARD};
                 border: 1px solid {_t.DANGER_LINE};
-                border-radius: {_t.RADIUS_LG}px;
+                border-left: 3px solid {_t.DANGER_SOLID};
+                border-radius: {_t.RADIUS_MD}px;
             }}
             QLabel#taskToastTitle {{
                 color: {_t.DANGER_TEXT_ALT};
                 font-size: {_t.FONT_MD}px;
                 font-weight: {_t.WEIGHT_SEMIBOLD};
+                background: transparent;
             }}
             QLabel#taskToastMessage {{
-                color: {_t.DANGER_TEXT};
+                color: {_t.TEXT_SECTION};
                 font-size: {_t.FONT_SM}px;
+                background: transparent;
             }}
             """
         )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(_t.PAD_MD, _t.PAD_SM, _t.PAD_LG, _t.PAD_SM)
+        layout.setSpacing(_t.GAP_SM)
+
         title_label = QLabel(title, self)
         title_label.setObjectName("taskToastTitle")
+        layout.addWidget(title_label)
+
         message_label = QLabel(message, self)
         message_label.setObjectName("taskToastMessage")
         message_label.setWordWrap(True)
-        message_label.setMaximumWidth(330)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(4)
-        layout.addWidget(title_label)
+        # 给文字留出合理换行宽度，避免在词中间折断。
+        message_label.setMinimumWidth(240)
+        message_label.setMaximumWidth(340)
         layout.addWidget(message_label)
-        self.adjustSize()
 
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(_t.DANGER_LINE), 1.0))
-        painter.setBrush(QColor(_t.DANGER_FILL))
-        painter.drawRoundedRect(
-            self.rect().adjusted(0, 0, -1, -1), _t.RADIUS_LG, _t.RADIUS_LG
-        )
+        self.adjustSize()
 
     def show_for_five_seconds(self) -> None:
         self._move_to_parent_corner()
@@ -374,22 +372,18 @@ class _TaskToast(QFrame):
         QTimer.singleShot(5000, self.close)
 
     def _move_to_parent_corner(self) -> None:
+        """居中于所属窗口，并保证不超出窗口边界。"""
+
         parent = self.parentWidget()
-        window = parent.window() if parent is not None else None
-        if window is not None and window.isVisible():
-            frame = window.frameGeometry()
-            self.move(
-                frame.center().x() - self.width() // 2,
-                frame.center().y() - self.height() // 2,
-            )
+        if parent is None:
             return
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            available = screen.availableGeometry()
-            self.move(
-                available.center().x() - self.width() // 2,
-                available.center().y() - self.height() // 2,
-            )
+        area = parent.rect()
+        x = area.center().x() - self.width() // 2
+        y = area.center().y() - self.height() // 2
+        # 夹到父控件内部，避免窗口很窄时提示被裁掉。
+        x = max(area.left() + _t.PAD_MD, min(x, area.right() - self.width()))
+        y = max(area.top() + _t.PAD_MD, min(y, area.bottom() - self.height()))
+        self.move(x, y)
 
 class TaskManagerWidget(BackgroundTaskOwner, QWidget):
     """完整的任务管理面板：任务、动作编辑器与复合动作库。"""
@@ -2690,7 +2684,6 @@ class UiTreeDumpWidget(QWidget):
         self.try_click_button = outline_button(
             "尝试点击", object_name=BUTTON_SECONDARY
         )
-        self.try_click_button.setToolTip("在模拟器中点击当前选中节点的中心")
         self.try_click_button.clicked.connect(self._try_click)
         self.try_click_button.setEnabled(False)
         search_row.addWidget(self.try_click_button)

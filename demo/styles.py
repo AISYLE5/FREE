@@ -1061,10 +1061,9 @@ def _state_labels_demo(main_page_cls) -> QWidget:
     layout = QHBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
-    for state, label in main_page_cls._STATE_LABELS.items():
+    for label in main_page_cls._STATE_LABELS.values():
         chip = QLabel(f"{label}")
         chip.setObjectName("demoChip")
-        chip.setToolTip(state)
         layout.addWidget(chip)
     layout.addStretch(1)
     return holder
