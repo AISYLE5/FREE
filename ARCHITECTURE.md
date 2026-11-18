@@ -106,9 +106,6 @@ FREE/
 │  └─ actions/*.json              #   复合动作库定义
 ├─ free_app/                      # 核心包（见第 4 节各层）
 ├─ tests/                         # 单元测试，与 free_app 模块一一对应
-├─ demo/                          # 界面样式总览（开发辅助，不参与运行）
-│  ├─ styles.py                   #   python demo\styles.py [--probe]
-│  └─ STYLE_GUIDE.md              #   界面样式清单（Demo 的配套文档）
 ├─ logs/                          # 运行日志（运行时生成）
 ├─ models/                        # OCR 模型（设置页下载，运行时生成）
 ├─ screenshots/                   # 动作/失败/关键页截图（运行时生成）
@@ -341,14 +338,6 @@ sequenceDiagram
 - **GUI**：`test_main_window`（窗口容器：运行编排、页面切换、任务顺序持久化、日志缓冲、今日完成的记录/过滤/列表标记同步）、`test_settings_dialog`（含「今日完成」分页与横向溢出回归）、`test_task_manager`、`test_action_editor_dialogs`（均使用 `QApplication` 与 mock，不做真实设备交互）。UI 收敛为四个模块后，这些用例统一从 `ui_main` / `ui_settings` / `ui_task_manager` / `ui_common` 导入，mock 目标也随之调整（如 `free_app.ui_settings.download_model`、`free_app.ui_main.QThread`）。
 
 引擎构造参数全部可注入，是测试友好性的根本保障；新增动作时应在 `test_action_schema` 与 `test_engine` 中同时补充规格与执行路径的用例。
-
-`demo/styles.py` 是**开发辅助工具**，不在 `tests/` 覆盖范围内，也不被 `free_app` 导入（依赖方向是 demo → free_app，单向）。它自带 `--probe` 自检模式，可在不打开窗口的情况下确认"能否导入 free_app / 样式能否构建 / 中文字体是否可用"：
-
-```powershell
-python demo\styles.py --probe
-```
-
-调整样式后用它配合人工核对（或截图比对）即可；若改动涉及渲染结果，建议像本次样式统一那样先截取改动前的基准图，再逐页对比像素差异，避免"看起来差不多"掩盖真实回归。
 
 > 写 GUI 用例时注意两处易踩的坑：`MainWindow._start_all_tasks()` 会先 `_save_task_order()`，那一步从磁盘读-改-写并**替换 `window.settings`**，因此测试里改设置必须写盘后 `load_settings()` 重载，改内存字典会被覆盖；`QLayout.removeWidget()` **不会隐藏**控件（与 `QStackedWidget.removeWidget` 不同），重建行列表时必须 `setParent(None)`，否则旧行会留在原位继续绘制到 `deleteLater` 执行为止。
 

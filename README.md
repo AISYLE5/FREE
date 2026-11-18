@@ -58,9 +58,6 @@ FREE/
 ├─ screenshots\                   # 动作/失败截图
 ├─ models\                        # OCR 模型下载目录
 ├─ main.py                        # 根目录启动入口
-├─ demo\                          # 界面样式总览（开发辅助，不参与运行）
-│  ├─ styles.py                   #   可视化 Demo（python demo\styles.py）
-│  └─ STYLE_GUIDE.md              #   界面样式清单（Demo 的配套文档）
 ├─ .gitignore                     # Git 忽略规则
 ├─ pyproject.toml                 # 项目配置与依赖
 ├─ ARCHITECTURE.md                # 架构与模块说明
